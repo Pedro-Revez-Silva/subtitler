@@ -1,0 +1,7 @@
+subtitler
+config.yaml
+.env
+subtitler-state.json
+data/
+tmp/
+.DS_Store

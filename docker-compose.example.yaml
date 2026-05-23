@@ -1,0 +1,16 @@
+services:
+  subtitler:
+    build: .
+    container_name: subtitler
+    restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      SONARR_API_KEY: ${SONARR_API_KEY}
+      RADARR_API_KEY: ${RADARR_API_KEY}
+    volumes:
+      - ./config.yaml:/config/config.yaml:ro
+      - ./data:/config
+      # Mount media using the same paths that Sonarr/Radarr report when possible.
+      - /mnt/media:/media
+    command: ["daemon", "-config", "/config/config.yaml"]

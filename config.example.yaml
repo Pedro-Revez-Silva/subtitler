@@ -1,0 +1,58 @@
+dry_run: true
+state_path: /config/subtitler-state.json
+temp_dir: /tmp
+
+tools:
+  ffmpeg: ffmpeg
+  ffprobe: ffprobe
+
+sonarr:
+  url: http://sonarr:8989
+  api_key: ${SONARR_API_KEY}
+
+radarr:
+  url: http://radarr:7878
+  api_key: ${RADARR_API_KEY}
+
+openai:
+  api_key: ${OPENAI_API_KEY}
+  # Timestamped SRT output currently uses whisper-1. Keep this unless the
+  # transcription backend gains native subtitle timestamps.
+  transcription_model: whisper-1
+  translation_model: gpt-4o-mini
+  max_chunk_seconds: 1200
+  context: ""
+
+subtitles:
+  required_languages:
+    - en
+    - pt-PT
+  audio_language: auto
+  # missing_only: generate only absent target subtitles
+  # generated_only: remove external subtitles and regenerate target languages
+  # force: regenerate target languages every scan
+  strategy: generated_only
+  cleanup:
+    # keep, quarantine, or delete. Use quarantine first, delete once trusted.
+    external_subtitles: quarantine
+  embedded:
+    # extract uses embedded subtitles before transcription when matching language tracks exist.
+    # ignore leaves embedded subtitles alone and falls back to generated subtitles.
+    action: extract
+    title: official
+  output:
+    format: srt
+    title: subtitler
+  protected_suffixes:
+    - forced
+  path_mappings: []
+  # Example if ARR containers and this container see different media roots:
+  # path_mappings:
+  #   - from: /movies
+  #     to: /media/movies
+
+processing:
+  scan_interval: 30m
+  concurrency: 1
+  retry_failed_after: 24h
+  max_attempts: 3
