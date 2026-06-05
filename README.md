@@ -181,7 +181,7 @@ Telemetry does not send media paths, titles, subtitle text, OpenAI prompts, API 
 
 ## Local development
 
-You need Go 1.25 or newer plus `ffmpeg`/`ffprobe` available on the host for local non-Docker runs.
+You need Go 1.25.11 or newer plus `ffmpeg`/`ffprobe` available on the host for local non-Docker runs.
 
 ```bash
 export OPENAI_API_KEY=...
