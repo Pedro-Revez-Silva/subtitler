@@ -1,6 +1,8 @@
 package state
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -13,7 +15,8 @@ type Store struct {
 }
 
 type Data struct {
-	Files map[string]FileState `json:"files"`
+	InstallationID string               `json:"installation_id,omitempty"`
+	Files          map[string]FileState `json:"files"`
 }
 
 type FileState struct {
@@ -68,6 +71,18 @@ func (s *Store) Put(path string, value FileState) {
 	s.data.Files[path] = value
 }
 
+func (s *Store) InstallationID() (string, error) {
+	if s.data.InstallationID != "" {
+		return s.data.InstallationID, nil
+	}
+	id, err := randomID()
+	if err != nil {
+		return "", err
+	}
+	s.data.InstallationID = id
+	return id, nil
+}
+
 func (s *Store) Save() error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil && filepath.Dir(s.path) != "." {
 		return err
@@ -76,5 +91,13 @@ func (s *Store) Save() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.path, data, 0o644)
+	return os.WriteFile(s.path, data, 0o600)
+}
+
+func randomID() (string, error) {
+	var data [16]byte
+	if _, err := rand.Read(data[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(data[:]), nil
 }

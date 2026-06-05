@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+export GOTOOLCHAIN="${GOTOOLCHAIN:-go1.25.11}"
+
+COVERAGE_MIN="${COVERAGE_MIN:-95}"
+COVERAGE_PACKAGES="${COVERAGE_PACKAGES:-./internal/config,./internal/subtitle}"
+COVERAGE_TEST_PACKAGES="${COVERAGE_TEST_PACKAGES:-./internal/config ./internal/subtitle}"
+COVERAGE_DIR="${COVERAGE_DIR:-.coverage}"
+COVERAGE_PROFILE="$COVERAGE_DIR/coverage.out"
+
+usage() {
+  cat >&2 <<'USAGE'
+Usage:
+  bin/quality fast
+  bin/quality commit
+  bin/quality push
+  bin/quality coverage
+  bin/quality coverage-all
+
+Environment:
+  COVERAGE_MIN=95
+  COVERAGE_PACKAGES=./internal/config,./internal/subtitle
+  COVERAGE_TEST_PACKAGES="./internal/config ./internal/subtitle"
+USAGE
+}
+
+run() {
+  local label="$1"
+  shift
+  echo "==> $label"
+  "$@"
+}
+
+check_format() {
+  local files
+  files="$(gofmt -l $(find cmd internal -name '*.go' -type f | sort))"
+  if [[ -n "$files" ]]; then
+    echo "gofmt needed:" >&2
+    echo "$files" >&2
+    return 1
+  fi
+}
+
+coverage() {
+  mkdir -p "$COVERAGE_DIR"
+  # shellcheck disable=SC2086
+  go test -coverpkg="$COVERAGE_PACKAGES" -coverprofile="$COVERAGE_PROFILE" $COVERAGE_TEST_PACKAGES
+  local total
+  total="$(go tool cover -func="$COVERAGE_PROFILE" | awk '/^total:/ { gsub("%", "", $3); print $3 }')"
+  if [[ -z "$total" ]]; then
+    echo "Could not read total coverage" >&2
+    return 1
+  fi
+  awk -v total="$total" -v minimum="$COVERAGE_MIN" 'BEGIN {
+    if (total + 0 < minimum + 0) {
+      printf("Coverage %.1f%% is below required %.1f%%\n", total, minimum) > "/dev/stderr"
+      exit 1
+    }
+    printf("Coverage %.1f%% meets required %.1f%%\n", total, minimum)
+  }'
+}
+
+coverage_all() {
+  mkdir -p "$COVERAGE_DIR"
+  go test -coverpkg=./... -coverprofile="$COVERAGE_DIR/all.out" ./...
+  go tool cover -func="$COVERAGE_DIR/all.out" | tail -n 20
+}
+
+case "${1:-}" in
+  fast)
+    run "Format" check_format
+    run "Tests" go test ./...
+    ;;
+  commit)
+    run "Format" check_format
+    run "Tests" go test ./...
+    run "Coverage" coverage
+    ;;
+  push)
+    run "Format" check_format
+    run "Tests" go test ./...
+    run "Vet" go vet ./...
+    run "Coverage" coverage
+    run "Docker build" docker build --build-arg APP_VERSION=ci -t subtitler:quality-check .
+    docker rmi subtitler:quality-check >/dev/null
+    run "Vulnerability check" go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+    ;;
+  coverage)
+    coverage
+    ;;
+  coverage-all)
+    coverage_all
+    ;;
+  *)
+    usage
+    exit 1
+    ;;
+esac

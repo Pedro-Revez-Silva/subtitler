@@ -10,27 +10,52 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pedrosilva/subtitler/internal/arr"
-	"github.com/pedrosilva/subtitler/internal/config"
-	"github.com/pedrosilva/subtitler/internal/media"
-	"github.com/pedrosilva/subtitler/internal/openai"
-	"github.com/pedrosilva/subtitler/internal/state"
-	"github.com/pedrosilva/subtitler/internal/subtitle"
+	"github.com/Pedro-Revez-Silva/subtitler/internal/arr"
+	"github.com/Pedro-Revez-Silva/subtitler/internal/config"
+	"github.com/Pedro-Revez-Silva/subtitler/internal/media"
+	"github.com/Pedro-Revez-Silva/subtitler/internal/openai"
+	"github.com/Pedro-Revez-Silva/subtitler/internal/state"
+	"github.com/Pedro-Revez-Silva/subtitler/internal/subtitle"
+	"github.com/Pedro-Revez-Silva/subtitler/internal/telemetry"
 )
 
 type App struct {
 	cfg       config.Config
 	logger    *slog.Logger
-	inspector media.Inspector
-	openai    *openai.Client
+	inspector mediaInspector
+	openai    speechClient
+	telemetry *telemetry.Client
+	mode      string
 }
 
-func New(cfg config.Config, logger *slog.Logger) *App {
+type mediaInspector interface {
+	CheckTools(context.Context) error
+	DurationMS(context.Context, string) (int, error)
+	AudioStreams(context.Context, string) ([]media.AudioStream, error)
+	SubtitleStreams(context.Context, string) ([]media.SubtitleStream, error)
+	ExtractAudioChunks(context.Context, string, media.AudioStream, string, int) ([]media.Chunk, func(), error)
+	ExtractSubtitles(context.Context, string, map[string]media.SubtitleStreamOutput) error
+}
+
+type speechClient interface {
+	TranscribeSRT(context.Context, string, string, string, string) (string, error)
+	TranslateCues(context.Context, []subtitle.Cue, string, string, string) ([]subtitle.Cue, error)
+}
+
+func New(cfg config.Config, logger *slog.Logger, telemetryClient *telemetry.Client, mode string) *App {
+	if telemetryClient == nil {
+		telemetryClient = &telemetry.Client{}
+	}
+	if mode == "" {
+		mode = "unknown"
+	}
 	return &App{
 		cfg:       cfg,
 		logger:    logger,
 		inspector: media.Inspector{Logger: logger, FFmpegPath: cfg.Tools.FFmpeg, FFprobePath: cfg.Tools.FFprobe},
 		openai:    openai.New(cfg.OpenAI.APIKey, cfg.OpenAI.BaseURL),
+		telemetry: telemetryClient,
+		mode:      mode,
 	}
 }
 
@@ -49,9 +74,18 @@ func (a *App) ScanAndProcess(ctx context.Context) error {
 	}
 	a.logger.Info("scan found media files", "count", len(items))
 
+	processedJobs := 0
 	for _, item := range items {
+		if a.cfg.Processing.MaxJobsPerScan > 0 && processedJobs >= a.cfg.Processing.MaxJobsPerScan {
+			a.logger.Info("scan job limit reached", "max_jobs_per_scan", a.cfg.Processing.MaxJobsPerScan)
+			break
+		}
 		item.Path = a.cfg.MapPath(item.Path)
-		if err := a.processItem(ctx, store, item); err != nil {
+		didWork, err := a.processItem(ctx, store, item)
+		if didWork {
+			processedJobs++
+		}
+		if err != nil {
 			a.logger.Error("failed to process media item", "path", item.Path, "error", err)
 			a.recordFailure(store, item, err)
 		}
@@ -59,6 +93,14 @@ func (a *App) ScanAndProcess(ctx context.Context) error {
 			return err
 		}
 	}
+	a.logger.Info("scan finished", "processed_jobs", processedJobs, "max_jobs_per_scan", a.cfg.Processing.MaxJobsPerScan)
+	a.telemetry.ScanFinished(telemetry.ScanSummary{
+		Mode:           a.mode,
+		FoundItems:     len(items),
+		ProcessedJobs:  processedJobs,
+		MaxJobsPerScan: a.cfg.Processing.MaxJobsPerScan,
+		DryRun:         a.cfg.DryRun,
+	})
 	return store.Save()
 }
 
@@ -76,7 +118,7 @@ func (a *App) GenerateOne(ctx context.Context, videoPath string) error {
 		Title:   strings.TrimSuffix(filepath.Base(videoPath), filepath.Ext(videoPath)),
 		Context: strings.TrimSuffix(filepath.Base(videoPath), filepath.Ext(videoPath)),
 	}
-	if err := a.processItem(ctx, store, item); err != nil {
+	if _, err := a.processItem(ctx, store, item); err != nil {
 		a.recordFailure(store, item, err)
 		_ = store.Save()
 		return err
@@ -118,6 +160,27 @@ func (a *App) Doctor(ctx context.Context) error {
 	if a.cfg.Radarr.URL == "" && a.cfg.Sonarr.URL == "" {
 		a.logger.Warn("no Sonarr/Radarr URL configured; daemon scan will not have a media source")
 	}
+	if err := a.checkARR(ctx, "sonarr", a.cfg.Sonarr); err != nil {
+		return err
+	}
+	if err := a.checkARR(ctx, "radarr", a.cfg.Radarr); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (a *App) checkARR(ctx context.Context, name string, service config.ServiceConfig) error {
+	if service.URL == "" {
+		return nil
+	}
+	if service.APIKey == "" {
+		a.logger.Warn("ARR API key is empty; daemon scan cannot use this service", "service", name, "url", service.URL)
+		return nil
+	}
+	if err := arr.New(service.URL, service.APIKey).SystemStatus(ctx); err != nil {
+		return fmt.Errorf("%s connectivity check failed: %w", name, err)
+	}
+	a.logger.Info("ARR service reachable", "service", name, "url", service.URL)
 	return nil
 }
 
@@ -143,10 +206,10 @@ func (a *App) mediaItems(ctx context.Context) ([]arr.MediaItem, error) {
 	return items, nil
 }
 
-func (a *App) processItem(ctx context.Context, store *state.Store, item arr.MediaItem) error {
+func (a *App) processItem(ctx context.Context, store *state.Store, item arr.MediaItem) (bool, error) {
 	info, err := os.Stat(item.Path)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	fileState, _ := store.Get(item.Path)
@@ -160,25 +223,26 @@ func (a *App) processItem(ctx context.Context, store *state.Store, item arr.Medi
 
 	sidecars, err := subtitle.FindSidecars(item.Path)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	if a.shouldDelayRetry(fileState, mediaUnchanged) {
 		a.logger.Info("skipping failed media until retry delay passes", "path", item.Path, "attempts", fileState.Attempts)
 		store.Put(item.Path, fileState)
-		return nil
+		return false, nil
 	}
 
 	generatedPaths := generatedSubtitlePaths(fileState)
 	if err := a.cleanupSidecars(item.Path, sidecars, generatedPaths); err != nil {
-		return err
+		return false, err
 	}
 
 	toGenerate := a.languagesToGenerate(item.Path, fileState, mediaUnchanged)
+	didWork := len(toGenerate) > 0
 	if len(toGenerate) > 0 && a.cfg.Subtitles.Embedded.Action == "extract" {
 		extracted, err := a.extractEmbeddedSubtitles(ctx, item.Path, toGenerate, fileState)
 		if err != nil {
-			return err
+			return didWork, err
 		}
 		if len(extracted) > 0 {
 			for language, outputPath := range extracted {
@@ -194,31 +258,37 @@ func (a *App) processItem(ctx context.Context, store *state.Store, item arr.Medi
 	}
 	if len(toGenerate) == 0 {
 		a.logger.Info("subtitles already present", "path", item.Path)
+		fileState.LastError = ""
+		fileState.Attempts = 0
 		store.Put(item.Path, fileState)
-		return nil
+		return didWork, nil
 	}
 	if a.cfg.DryRun {
 		a.logger.Info("dry run would generate subtitles", "path", item.Path, "languages", toGenerate)
 		store.Put(item.Path, fileState)
-		return nil
+		return true, nil
 	}
 	if a.cfg.OpenAI.APIKey == "" {
-		return fmt.Errorf("openai.api_key is required to generate subtitles")
+		return true, fmt.Errorf("openai.api_key is required to generate subtitles")
 	}
 
-	audioLanguage := a.cfg.Subtitles.AudioLanguage
-	sourceLang := audioLanguage
-	if sourceLang == "" {
-		sourceLang = "auto"
-	}
-
-	sourceSRT, sourceLanguage, err := a.transcribe(ctx, item, sourceLang)
+	sourceSRT, sourceLanguage, err := a.transcribe(ctx, item, a.cfg.Subtitles.AudioLanguage)
 	if err != nil {
-		return err
+		return true, err
 	}
 	sourceCues, err := subtitle.ParseSRT(sourceSRT)
 	if err != nil {
-		return err
+		return true, err
+	}
+	if durationMS, err := a.inspector.DurationMS(ctx, item.Path); err != nil {
+		a.logger.Warn("could not determine media duration for subtitle trimming", "path", item.Path, "error", err)
+	} else {
+		before := len(sourceCues)
+		sourceCues = subtitle.TrimToDuration(sourceCues, durationMS)
+		if len(sourceCues) != before {
+			a.logger.Info("trimmed subtitles to media duration", "path", item.Path, "before", before, "after", len(sourceCues))
+		}
+		sourceSRT = subtitle.FormatSRT(sourceCues)
 	}
 
 	for _, language := range toGenerate {
@@ -227,13 +297,13 @@ func (a *App) processItem(ctx context.Context, store *state.Store, item arr.Medi
 			a.logger.Info("translating subtitles", "path", item.Path, "from", sourceLanguage, "to", language)
 			translatedCues, err := a.openai.TranslateCues(ctx, sourceCues, a.cfg.OpenAI.TranslationModel, language, a.contextFor(item))
 			if err != nil {
-				return err
+				return true, err
 			}
 			outputSRT = subtitle.FormatSRT(translatedCues)
 		}
 		outputPath := subtitle.OutputPath(item.Path, language, a.cfg.Subtitles.Output.Title)
 		if err := os.WriteFile(outputPath, []byte(outputSRT), 0o644); err != nil {
-			return err
+			return true, err
 		}
 		fileState.Languages[language] = state.LangState{
 			OutputPath: outputPath,
@@ -246,7 +316,7 @@ func (a *App) processItem(ctx context.Context, store *state.Store, item arr.Medi
 	fileState.LastError = ""
 	fileState.Attempts = 0
 	store.Put(item.Path, fileState)
-	return nil
+	return true, nil
 }
 
 func (a *App) transcribe(ctx context.Context, item arr.MediaItem, language string) (string, string, error) {
@@ -258,9 +328,7 @@ func (a *App) transcribe(ctx context.Context, item arr.MediaItem, language strin
 	if err != nil {
 		return "", "", err
 	}
-	if stream.Language != "" && a.cfg.Subtitles.AudioLanguage != "auto" {
-		language = stream.Language
-	}
+	transcriptionLanguage, sourceLanguage := transcriptionLanguages(language, stream.Language)
 	a.logger.Info("selected audio stream", "path", item.Path, "index", stream.Index, "language", stream.Language, "title", stream.Title)
 
 	chunks, cleanup, err := a.inspector.ExtractAudioChunks(ctx, item.Path, stream, a.cfg.TempDir, a.cfg.OpenAI.MaxChunkSeconds)
@@ -275,7 +343,7 @@ func (a *App) transcribe(ctx context.Context, item arr.MediaItem, language strin
 	var cues []subtitle.Cue
 	for _, chunk := range chunks {
 		a.logger.Info("transcribing audio chunk", "path", item.Path, "chunk", chunk.ChunkNumber, "offset_ms", chunk.OffsetMS)
-		srt, err := a.openai.TranscribeSRT(ctx, chunk.Path, a.cfg.OpenAI.TranscriptionModel, a.contextFor(item), openAILanguage(language))
+		srt, err := a.openai.TranscribeSRT(ctx, chunk.Path, a.cfg.OpenAI.TranscriptionModel, a.contextFor(item), openAILanguage(transcriptionLanguage))
 		if err != nil {
 			return "", "", err
 		}
@@ -285,7 +353,7 @@ func (a *App) transcribe(ctx context.Context, item arr.MediaItem, language strin
 		}
 		cues = append(cues, subtitle.Offset(chunkCues, chunk.OffsetMS)...)
 	}
-	return subtitle.FormatSRT(cues), language, nil
+	return subtitle.FormatSRT(cues), sourceLanguage, nil
 }
 
 func (a *App) extractEmbeddedSubtitles(ctx context.Context, videoPath string, languages []string, fileState state.FileState) (map[string]string, error) {
@@ -325,7 +393,6 @@ func (a *App) cleanupSidecars(videoPath string, sidecars []subtitle.Sidecar, gen
 	if a.cfg.Subtitles.Cleanup.ExternalSubtitles == "keep" {
 		return nil
 	}
-	required := languageSet(a.cfg.Subtitles.RequiredLanguages)
 	for _, sidecar := range sidecars {
 		if generatedPaths[sidecar.Path] {
 			continue
@@ -337,7 +404,7 @@ func (a *App) cleanupSidecars(videoPath string, sidecars []subtitle.Sidecar, gen
 		if a.cfg.Subtitles.Strategy == "generated_only" || a.cfg.Subtitles.Strategy == "force" {
 			shouldClean = true
 		}
-		if sidecar.Language != "" && !required[sidecar.Language] {
+		if sidecar.Language != "" && !containsLanguage(a.cfg.Subtitles.RequiredLanguages, sidecar.Language) {
 			shouldClean = true
 		}
 		if !shouldClean {
@@ -387,15 +454,15 @@ func (a *App) languagesToGenerate(videoPath string, fileState state.FileState, m
 	if err != nil {
 		return slices.Clone(a.cfg.Subtitles.RequiredLanguages)
 	}
-	present := map[string]bool{}
+	present := []string{}
 	for _, sidecar := range sidecars {
 		if sidecar.Language != "" {
-			present[sidecar.Language] = true
+			present = append(present, sidecar.Language)
 		}
 	}
 	var missing []string
 	for _, language := range a.cfg.Subtitles.RequiredLanguages {
-		if !present[language] {
+		if !containsLanguage(present, language) {
 			missing = append(missing, language)
 		}
 	}
@@ -421,19 +488,51 @@ func (a *App) recordFailure(store *state.Store, item arr.MediaItem, err error) {
 	store.Put(item.Path, fileState)
 }
 
-func languageSet(languages []string) map[string]bool {
-	set := make(map[string]bool, len(languages))
-	for _, language := range languages {
-		set[language] = true
-	}
-	return set
+func sameLanguage(a, b string) bool {
+	a = languageBase(a)
+	b = languageBase(b)
+	return a != "" && a == b
 }
 
-func sameLanguage(a, b string) bool {
-	if a == b {
-		return true
+func containsLanguage(languages []string, candidate string) bool {
+	for _, language := range languages {
+		if sameLanguage(language, candidate) {
+			return true
+		}
 	}
-	return strings.Split(a, "-")[0] == strings.Split(b, "-")[0]
+	return false
+}
+
+func languageBase(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.ReplaceAll(value, "_", "-")
+	switch value {
+	case "", "auto", "und":
+		return ""
+	case "eng", "english":
+		return "en"
+	case "por", "portuguese":
+		return "pt"
+	case "chi", "zho", "cmn", "chinese":
+		return "zh"
+	default:
+		return strings.Split(value, "-")[0]
+	}
+}
+
+func transcriptionLanguages(requestedLanguage, streamLanguage string) (string, string) {
+	requestLanguage := strings.TrimSpace(requestedLanguage)
+	if requestLanguage == "" {
+		requestLanguage = "auto"
+	}
+	sourceLanguage := requestLanguage
+	if languageBase(streamLanguage) != "" {
+		sourceLanguage = streamLanguage
+		if languageBase(requestLanguage) != "" {
+			requestLanguage = streamLanguage
+		}
+	}
+	return requestLanguage, sourceLanguage
 }
 
 func openAILanguage(language string) string {

@@ -96,6 +96,11 @@ func (c *Client) SonarrEpisodes(ctx context.Context) ([]MediaItem, error) {
 	return items, nil
 }
 
+func (c *Client) SystemStatus(ctx context.Context) error {
+	var status systemStatus
+	return c.get(ctx, "/api/v3/system/status", nil, &status)
+}
+
 func (c *Client) get(ctx context.Context, endpoint string, query url.Values, out any) error {
 	u, err := url.Parse(c.baseURL + endpoint)
 	if err != nil {
@@ -144,4 +149,8 @@ type sonarrEpisodeFile struct {
 	ID           int    `json:"id"`
 	Path         string `json:"path"`
 	RelativePath string `json:"relativePath"`
+}
+
+type systemStatus struct {
+	Version string `json:"version"`
 }

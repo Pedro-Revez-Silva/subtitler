@@ -1,0 +1,198 @@
+name: Scheduled Release
+
+on:
+  schedule:
+    - cron: "0 */12 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: scheduled-release-main
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.plan.outputs.should_release }}
+      previous_tag: ${{ steps.plan.outputs.previous_tag }}
+      tag: ${{ steps.plan.outputs.tag }}
+      version: ${{ steps.plan.outputs.version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Plan release
+        id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git fetch --tags --force
+          previous_tag="$(git tag --list 'v[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9].*' --sort=-version:refname | head -n 1)"
+          if [[ -n "$previous_tag" ]] && git diff --quiet "$previous_tag"..HEAD; then
+            echo "No changes since $previous_tag; skipping release."
+            {
+              echo "should_release=false"
+              echo "previous_tag=$previous_tag"
+              echo "tag="
+              echo "version="
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          date_version="$(date -u +'%Y.%m.%d')"
+          release_number=1
+          for existing_tag in $(git tag --list "v${date_version}.*" --sort=version:refname); do
+            suffix="${existing_tag##*.}"
+            if [[ "$suffix" =~ ^[0-9]+$ ]] && (( suffix >= release_number )); then
+              release_number=$((suffix + 1))
+            fi
+          done
+
+          version="${date_version}.${release_number}"
+          tag="v${version}"
+          {
+            echo "should_release=true"
+            echo "previous_tag=$previous_tag"
+            echo "tag=$tag"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
+
+  quality:
+    runs-on: ubuntu-latest
+    needs: [plan]
+    if: needs.plan.outputs.should_release == 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run quality gate
+        run: bin/quality commit
+
+      - name: Run vet
+        run: go vet ./...
+
+      - name: Build binary
+        run: go build ./cmd/subtitler
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: [plan, quality]
+    if: needs.plan.outputs.should_release == 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=raw,value=${{ needs.plan.outputs.version }}
+            type=raw,value=${{ needs.plan.outputs.tag }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APP_VERSION=${{ needs.plan.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  github-release:
+    runs-on: ubuntu-latest
+    needs: [plan, docker]
+    if: needs.plan.outputs.should_release == 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Create tag and GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          PREVIOUS_TAG: ${{ needs.plan.outputs.previous_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          head_sha="$(git rev-parse HEAD)"
+
+          if [[ -n "$PREVIOUS_TAG" ]]; then
+            git log --oneline --no-decorate "$PREVIOUS_TAG"..HEAD > release-notes.txt
+          else
+            git log --oneline --no-decorate -n 50 > release-notes.txt
+          fi
+
+          {
+            echo "Automated scheduled release."
+            echo
+            echo "Docker images:"
+            echo "- ghcr.io/${GITHUB_REPOSITORY}:${VERSION}"
+            echo "- ghcr.io/${GITHUB_REPOSITORY}:${TAG}"
+            echo "- ghcr.io/${GITHUB_REPOSITORY}:latest"
+            echo
+            echo "Changes:"
+            sed 's/^/- /' release-notes.txt
+          } > release-body.txt
+
+          gh release create "$TAG" \
+            --target "$head_sha" \
+            --title "Release ${VERSION}" \
+            --notes-file release-body.txt

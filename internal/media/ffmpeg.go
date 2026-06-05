@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -48,6 +49,22 @@ func (i Inspector) CheckTools(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+func (i Inspector) DurationMS(ctx context.Context, videoPath string) (int, error) {
+	cmd := exec.CommandContext(ctx, i.ffprobe(), "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", videoPath)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return 0, fmt.Errorf("ffprobe duration failed: %w: %s", err, stderr.String())
+	}
+	seconds, err := strconv.ParseFloat(strings.TrimSpace(stdout.String()), 64)
+	if err != nil {
+		return 0, err
+	}
+	return int(seconds * 1000), nil
 }
 
 func (i Inspector) AudioStreams(ctx context.Context, videoPath string) ([]AudioStream, error) {

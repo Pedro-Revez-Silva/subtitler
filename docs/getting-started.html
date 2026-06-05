@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Getting started — Subtitler</title>
+    <meta
+      name="description"
+      content="Install Subtitler with Docker, connect Sonarr and Radarr, mount media paths, and run the first safe library scan."
+    />
+    <link rel="icon" href="favicon.png" type="image/png" />
+    <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="index.html">
+        <img class="logo" src="logo.png" alt="Subtitler" /><span>Subtitler</span>
+      </a>
+      <nav class="nav" id="nav">
+        <a href="index.html">Overview</a>
+        <a class="active" href="getting-started.html">Setup</a>
+        <a href="https://github.com/Pedro-Revez-Silva/subtitler">GitHub</a>
+        <a class="btn btn--primary btn--sm nav-cta" href="#copy">Get started</a>
+      </nav>
+      <button class="nav-toggle" aria-label="Menu" aria-expanded="false" aria-controls="nav">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
+    </header>
+
+    <main class="docs">
+      <aside class="toc">
+        <div class="toc-label">On this page</div>
+        <a href="#single-file">Single file</a>
+        <a href="#copy">Copy files</a>
+        <a href="#arr">Connect ARR</a>
+        <a href="#paths">Mount paths</a>
+        <a href="#languages">Pick languages</a>
+        <a href="#validate">Validate</a>
+        <a href="#daemon">Run daemon</a>
+      </aside>
+
+      <article class="article">
+        <div class="article-head">
+          <span class="eyebrow">Setup · Docker or executable</span>
+          <h1>Getting started</h1>
+          <p>
+            Docker is the recommended install for library scanning. The executable can also
+            generate subtitles for a single file without Sonarr, Radarr, or a config file.
+          </p>
+        </div>
+
+        <h2 id="single-file"><span class="step-tag">Standalone</span>Generate one file</h2>
+        <p>Use this path when you only want subtitles for one video and do not need the daemon.</p>
+        <div class="code">
+          <div class="code-head">
+            <span class="fname">terminal</span>
+            <button class="code-copy" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span class="copy-label">Copy</span></button>
+          </div>
+          <pre><code>export OPENAI_API_KEY=...
+go build -o subtitler ./cmd/subtitler
+./subtitler generate -langs en,pt-PT "/path/to/movie.mkv"</code></pre>
+        </div>
+        <p>
+          If <code>config.yaml</code> is absent and <code>-config</code> is not passed,
+          <code>generate</code> uses built-in defaults, reads <code>OPENAI_API_KEY</code>
+          from the environment, and writes <code>.subtitler.&lt;language&gt;.srt</code>
+          sidecars next to the video.
+        </p>
+        <div class="callout">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+          <p>Passing <code>-config custom.yaml</code> makes the config explicit. If that file is missing, the command fails instead of silently falling back.</p>
+        </div>
+
+        <h2 id="copy"><span class="step-tag">01</span>Copy the example files</h2>
+        <p>Start from the bundled examples, then fill in your API keys.</p>
+        <div class="code">
+          <div class="code-head">
+            <span class="fname">terminal</span>
+            <button class="code-copy" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span class="copy-label">Copy</span></button>
+          </div>
+          <pre><code>cp config.example.yaml config.yaml
+cp .env.example .env</code></pre>
+        </div>
+        <p>Edit <code>.env</code> with your OpenAI, Sonarr, and Radarr keys.</p>
+        <div class="code">
+          <div class="code-head">
+            <span class="fname">.env</span>
+            <button class="code-copy" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span class="copy-label">Copy</span></button>
+          </div>
+          <pre><code>OPENAI_API_KEY=your-openai-api-key
+SONARR_API_KEY=your-sonarr-api-key
+RADARR_API_KEY=your-radarr-api-key
+PUID=1000
+PGID=1000</code></pre>
+        </div>
+        <div class="callout">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+          <p>Set <code>PUID</code> / <code>PGID</code> to the user that owns your media (<code>id -u</code> and <code>id -g</code>) so sidecars are written with the right permissions.</p>
+        </div>
+
+        <h2 id="arr"><span class="step-tag">02</span>Connect Sonarr and Radarr</h2>
+        <p>Set URLs in <code>config.yaml</code> that are reachable from the Subtitler container. The keys are read from <code>.env</code>.</p>
+        <div class="code">
+          <div class="code-head">
+            <span class="fname">config.yaml</span>
+            <button class="code-copy" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span class="copy-label">Copy</span></button>
+          </div>
+          <pre><code>sonarr:
+  url: http://sonarr:8989
+  api_key: ${SONARR_API_KEY}
+
+radarr:
+  url: http://radarr:7878
+  api_key: ${RADARR_API_KEY}</code></pre>
+        </div>
+        <p>Container names like <code>http://sonarr:8989</code> work when everything shares a Docker network. Otherwise use a reachable host or IP.</p>
+
+        <h2 id="paths"><span class="step-tag">03</span>Mount the media paths</h2>
+        <p>
+          Subtitler asks Sonarr and Radarr for media paths, so the container must see those
+          <strong>exact</strong> paths. Mount your library at the same path the ARR apps report.
+        </p>
+        <div class="code">
+          <div class="code-head">
+            <span class="fname">docker-compose.example.yaml</span>
+            <button class="code-copy" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span class="copy-label">Copy</span></button>
+          </div>
+          <pre><code>volumes:
+  - ./config.yaml:/config/config.yaml:ro
+  - ./data:/config
+  # Match the path Sonarr/Radarr report, e.g.:
+  - /mnt/media:/media</code></pre>
+        </div>
+        <p>If the ARR apps report a path the container can't match exactly, translate it with <code>path_mappings</code>:</p>
+        <div class="code">
+          <div class="code-head">
+            <span class="fname">config.yaml</span>
+            <button class="code-copy" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span class="copy-label">Copy</span></button>
+          </div>
+          <pre><code>subtitles:
+  path_mappings:
+    - from: /movies
+      to: /media/movies</code></pre>
+        </div>
+
+        <h2 id="languages"><span class="step-tag">04</span>Pick languages and strategy</h2>
+        <p>
+          Set the languages you want and how aggressively to fill them. <code>missing_only</code>
+          writes a target language only when no matching sidecar exists, and embedded tracks are
+          extracted before transcription.
+        </p>
+        <div class="code">
+          <div class="code-head">
+            <span class="fname">config.yaml</span>
+            <button class="code-copy" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span class="copy-label">Copy</span></button>
+          </div>
+          <pre><code>subtitles:
+  required_languages:
+    - en
+    - pt-PT
+  strategy: missing_only        # missing_only | generated_only | force
+  embedded:
+    action: extract             # extract | ignore
+  cleanup:
+    external_subtitles: keep    # keep | quarantine | delete</code></pre>
+        </div>
+        <p>Generated files are written next to the video as <code>movie.subtitler.en.srt</code>, one per language.</p>
+
+        <h2 id="validate"><span class="step-tag">05</span>Validate safely</h2>
+        <div class="callout callout--warn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m10.3 3.9-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3l-8-14a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>
+          <p>The example config ships with <code>dry_run: true</code>. Keep it until the logs show the files and actions you expect.</p>
+        </div>
+        <p><code>doctor</code> checks connectivity and tooling; <code>scan</code> reports what it would do.</p>
+        <div class="code">
+          <div class="code-head">
+            <span class="fname">terminal</span>
+            <button class="code-copy" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span class="copy-label">Copy</span></button>
+          </div>
+          <pre><code>docker compose --env-file .env -f docker-compose.example.yaml build
+docker compose --env-file .env -f docker-compose.example.yaml \
+  run --rm subtitler doctor -config /config/config.yaml
+docker compose --env-file .env -f docker-compose.example.yaml \
+  run --rm subtitler scan -config /config/config.yaml</code></pre>
+        </div>
+
+        <h2 id="daemon"><span class="step-tag">06</span>Run the daemon</h2>
+        <p>
+          When the dry-run looks right, set <code>dry_run: false</code>. The example keeps a low
+          <code>max_jobs_per_scan</code> so the library fills in gradually instead of all at once.
+        </p>
+        <div class="code">
+          <div class="code-head">
+            <span class="fname">config.yaml</span>
+            <button class="code-copy" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span class="copy-label">Copy</span></button>
+          </div>
+          <pre><code>dry_run: false
+processing:
+  scan_interval: 30m
+  max_jobs_per_scan: 1   # 0 = unlimited</code></pre>
+        </div>
+        <p>The example compose runs the <code>daemon</code> command by default, so a plain <code>up -d</code> starts it.</p>
+        <div class="code">
+          <div class="code-head">
+            <span class="fname">terminal</span>
+            <button class="code-copy" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span class="copy-label">Copy</span></button>
+          </div>
+          <pre><code>docker compose --env-file .env -f docker-compose.example.yaml up -d
+docker compose --env-file .env -f docker-compose.example.yaml logs -f subtitler</code></pre>
+        </div>
+        <div class="callout">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+          <p>The daemon repeats the scan every <code>scan_interval</code>, processing only the missing-subtitle jobs it finds.</p>
+        </div>
+      </article>
+    </main>
+
+    <footer class="footer">
+      <div class="container footer-thin">
+        <a class="brand" href="index.html"><img class="logo" src="logo.png" alt="Subtitler" /><span>Subtitler</span></a>
+        <div class="footer-meta">
+          <a href="https://github.com/Pedro-Revez-Silva/subtitler/blob/main/LICENSE">GPL-3.0</a>
+          <span class="sep">·</span>
+          <span>Made with <svg class="heart" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.29 1.51 4.04 3 5.5l7 7Z"/></svg> for self-hosters</span>
+        </div>
+      </div>
+    </footer>
+
+    <script src="main.js" defer></script>
+  </body>
+</html>

@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pedrosilva/subtitler/internal/subtitle"
+	"github.com/Pedro-Revez-Silva/subtitler/internal/subtitle"
 )
 
 type Client struct {

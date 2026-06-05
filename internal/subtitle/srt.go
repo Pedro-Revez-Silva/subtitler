@@ -69,6 +69,23 @@ func Offset(cues []Cue, offsetMS int) []Cue {
 	return out
 }
 
+func TrimToDuration(cues []Cue, durationMS int) []Cue {
+	if durationMS <= 0 {
+		return cues
+	}
+	out := make([]Cue, 0, len(cues))
+	for _, cue := range cues {
+		if cue.StartMS >= durationMS {
+			continue
+		}
+		if cue.EndMS > durationMS {
+			cue.EndMS = durationMS
+		}
+		out = append(out, cue)
+	}
+	return out
+}
+
 func FormatSRT(cues []Cue) string {
 	sort.SliceStable(cues, func(i, j int) bool {
 		return cues[i].StartMS < cues[j].StartMS

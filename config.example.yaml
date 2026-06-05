@@ -23,6 +23,13 @@ openai:
   max_chunk_seconds: 1200
   context: ""
 
+telemetry:
+  # Disabled by default. When enabled, sends anonymous startup and scan summary events to Sentry.
+  enabled: false
+  sentry_dsn: ${SENTRY_DSN}
+  environment: production
+  release: ""
+
 subtitles:
   required_languages:
     - en
@@ -31,10 +38,10 @@ subtitles:
   # missing_only: generate only absent target subtitles
   # generated_only: remove external subtitles and regenerate target languages
   # force: regenerate target languages every scan
-  strategy: generated_only
+  strategy: missing_only
   cleanup:
     # keep, quarantine, or delete. Use quarantine first, delete once trusted.
-    external_subtitles: quarantine
+    external_subtitles: keep
   embedded:
     # extract uses embedded subtitles before transcription when matching language tracks exist.
     # ignore leaves embedded subtitles alone and falls back to generated subtitles.
@@ -56,3 +63,5 @@ processing:
   concurrency: 1
   retry_failed_after: 24h
   max_attempts: 3
+  # 0 means unlimited. Start low to control OpenAI spend during first library runs.
+  max_jobs_per_scan: 1

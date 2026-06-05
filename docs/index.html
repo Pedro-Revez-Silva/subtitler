@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Subtitler — automatic subtitles for your media library</title>
+    <meta
+      name="description"
+      content="Self-hosted tool that generates the subtitles your media library is missing. Reuses embedded tracks first, transcribes with OpenAI only when needed, and writes standard SRT sidecars. Integrates with Sonarr and Radarr."
+    />
+    <link rel="icon" href="favicon.png" type="image/png" />
+    <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="index.html">
+        <img class="logo" src="logo.png" alt="Subtitler" /><span>Subtitler</span>
+      </a>
+      <nav class="nav" id="nav">
+        <a class="active" href="index.html">Overview</a>
+        <a href="getting-started.html">Setup</a>
+        <a href="https://github.com/Pedro-Revez-Silva/subtitler">GitHub</a>
+        <a class="btn btn--primary btn--sm nav-cta" href="getting-started.html">Get started</a>
+      </nav>
+      <button class="nav-toggle" aria-label="Menu" aria-expanded="false" aria-controls="nav">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
+    </header>
+
+    <main>
+      <!-- HERO -->
+      <section class="hero">
+        <div class="container hero-inner" data-reveal>
+          <span class="pill"><span class="dot dot--beta"></span> Experimental · early build</span>
+          <h1 class="display">Every title,<br /><span class="accent">subtitled.</span></h1>
+          <p class="lead">
+            A self-hosted tool that generates the subtitles your media library is missing. It reuses
+            embedded tracks first and only calls OpenAI when it has to — writing clean, standard SRT
+            files. Sonarr and Radarr tell it where your media lives.
+          </p>
+          <div class="hero-actions">
+            <a class="btn btn--primary" href="getting-started.html">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="m3.3 7 8.7 5 8.7-5M12 22V12"/></svg>
+              Set up with Docker
+            </a>
+            <a class="btn btn--ghost" href="#how">See how it works</a>
+          </div>
+          <div class="hero-meta">
+            <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Extraction-first</span>
+            <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Dry-run by default</span>
+            <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> GPL-3.0</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- HOW IT WORKS -->
+      <section class="section section--alt" id="how">
+        <div class="container">
+          <div class="section-head" data-reveal>
+            <span class="eyebrow">How it works</span>
+            <h2>Find the gaps, fill only what's missing</h2>
+            <p>
+              Subtitler scans your library, checks what subtitles already exist, and creates only
+              what's absent — doing the least expensive thing each time. It leans on Sonarr and
+              Radarr to locate files, so there's no media path to configure twice.
+            </p>
+          </div>
+          <div class="steps">
+            <div class="step" data-reveal>
+              <span class="num">1</span>
+              <h3>Locate media</h3>
+              <p>Asks Sonarr and Radarr for the paths of every file — no separate library config.</p>
+            </div>
+            <div class="step" data-reveal>
+              <span class="num">2</span>
+              <h3>Inspect</h3>
+              <p>Checks existing sidecars and embedded subtitle streams against your required languages.</p>
+            </div>
+            <div class="step" data-reveal>
+              <span class="num">3</span>
+              <h3>Extract or generate</h3>
+              <p>Reuses matching embedded tracks first; transcribes with OpenAI only when nothing fits.</p>
+            </div>
+            <div class="step" data-reveal>
+              <span class="num">4</span>
+              <h3>Write</h3>
+              <p>Saves standard SRT sidecars next to the video and records state for retries.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- FEATURES -->
+      <section class="section">
+        <div class="container">
+          <div class="section-head" data-reveal>
+            <span class="eyebrow">Why it stays out of your way</span>
+            <h2>Built for set-and-forget homelabs</h2>
+          </div>
+          <div class="features">
+            <article class="feature" data-reveal>
+              <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 15h4M15 15h2M7 11h2M13 11h4"/></svg></div>
+              <h3>Generates what's missing</h3>
+              <p>Transcribes audio with OpenAI and writes an SRT only for the languages your media lacks.</p>
+            </article>
+            <article class="feature" data-reveal>
+              <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.91a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></svg></div>
+              <h3>Extraction-first</h3>
+              <p>Matching embedded tracks are reused before any paid transcription ever happens.</p>
+            </article>
+            <article class="feature" data-reveal>
+              <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg></div>
+              <h3>Controlled rollout</h3>
+              <p>Dry-run, <code>missing_only</code>, and a per-scan job cap keep first runs cheap and safe.</p>
+            </article>
+            <article class="feature" data-reveal>
+              <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 1 1 0 10h-2"/><line x1="8" y1="12" x2="16" y2="12"/></svg></div>
+              <h3>Fits your library</h3>
+              <p>Integrates with Sonarr and Radarr to find media, then drops <code>.srt</code> files beside each video.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- QUICKSTART -->
+      <section class="section section--alt">
+        <div class="container hero-grid">
+          <div data-reveal>
+            <span class="eyebrow">Quickstart</span>
+            <h2>Docker-native, ffmpeg included</h2>
+            <p class="lead">
+              The image bundles the Go binary plus <code>ffmpeg</code> and <code>ffprobe</code>. Copy
+              the examples, add your keys, validate in dry-run, then start the daemon.
+            </p>
+            <div class="hero-actions">
+              <a class="btn btn--primary" href="getting-started.html">Full setup guide</a>
+              <a class="btn btn--ghost" href="https://github.com/Pedro-Revez-Silva/subtitler">View source</a>
+            </div>
+          </div>
+          <div class="code" data-reveal>
+            <div class="code-head">
+              <span class="fname">terminal</span>
+              <button class="code-copy" type="button">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                <span class="copy-label">Copy</span>
+              </button>
+            </div>
+            <pre><code># configure
+cp config.example.yaml config.yaml
+cp .env.example .env
+
+# validate safely (dry-run is on by default)
+docker compose --env-file .env \
+  -f docker-compose.example.yaml \
+  run --rm subtitler doctor -config /config/config.yaml
+
+# start the daemon
+docker compose --env-file .env \
+  -f docker-compose.example.yaml up -d</code></pre>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="container footer-thin">
+        <a class="brand" href="index.html"><img class="logo" src="logo.png" alt="Subtitler" /><span>Subtitler</span></a>
+        <div class="footer-meta">
+          <a href="https://github.com/Pedro-Revez-Silva/subtitler/blob/main/LICENSE">GPL-3.0</a>
+          <span class="sep">·</span>
+          <span>Made with <svg class="heart" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.29 1.51 4.04 3 5.5l7 7Z"/></svg> for self-hosters</span>
+        </div>
+      </div>
+    </footer>
+
+    <script src="main.js" defer></script>
+  </body>
+</html>

@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 240" role="img" aria-labelledby="title desc">
+  <title id="title">Subtitler logo</title>
+  <desc id="desc">Subtitler wordmark with a bold video frame, waveform, and subtitle dots.</desc>
+  <defs>
+    <linearGradient id="stroke" x1="18" y1="124" x2="292" y2="124" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#142c59"/>
+      <stop offset="0.46" stop-color="#4a315c"/>
+      <stop offset="1" stop-color="#ff725f"/>
+    </linearGradient>
+    <linearGradient id="coral" x1="98" y1="116" x2="298" y2="116" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ff695d"/>
+      <stop offset="1" stop-color="#ff7f67"/>
+    </linearGradient>
+    <linearGradient id="word" x1="338" y1="104" x2="650" y2="104" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f3faf6"/>
+      <stop offset="1" stop-color="#d6e2dd"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="12" width="284" height="216" rx="34" fill="#0a1110"/>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M75 99V68c0-13 9-24 22-26l91-15c6-1 12 4 12 10v30" stroke="url(#stroke)" stroke-width="9"/>
+    <path d="M218 41l31-5c6-1 12 4 12 10v25" stroke="url(#coral)" stroke-width="9"/>
+    <path d="M75 151v30c0 14 13 24 27 21l129-25c12-2 21-13 21-25v-25" stroke="url(#stroke)" stroke-width="9"/>
+    <path d="M18 126h80c28 0 41-22 54-45 12-22 25-44 52-44 24 0 36 21 48 42 12 21 23 41 47 41h34" stroke="url(#stroke)" stroke-width="11"/>
+    <path d="M18 106h80c28 0 41 22 54 45 12 22 25 44 52 44 24 0 36-21 48-42 12-21 23-41 47-41h34" stroke="url(#coral)" stroke-width="11"/>
+    <path d="M51 86h50c23 0 34-18 45-36 13-22 27-43 57-43 27 0 41 21 54 41 11 18 22 36 45 36h38" stroke="url(#coral)" stroke-width="10" opacity="0.76"/>
+    <path d="M51 165h50c23 0 34 18 45 36 13 22 27 43 57 43 27 0 41-21 54-41 11-18 22-36 45-36h38" stroke="url(#stroke)" stroke-width="10" opacity="0.92"/>
+    <path d="M18 106h55" stroke="#142c59" stroke-width="11"/>
+    <path d="M18 126h55" stroke="#142c59" stroke-width="11"/>
+    <path d="M45 86h22" stroke="#142c59" stroke-width="9"/>
+    <path d="M45 165h22" stroke="#142c59" stroke-width="9"/>
+  </g>
+  <path d="M232 74c0-6 7-10 12-6l22 14c5 3 5 10 0 13l-22 14c-5 4-12 0-12-6z" fill="#c75762"/>
+  <g fill="#f36f61">
+    <circle cx="130" cy="125" r="6"/>
+    <circle cx="150" cy="125" r="6"/>
+    <circle cx="170" cy="125" r="6"/>
+  </g>
+  <text x="342" y="116" fill="url(#word)" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="72" font-weight="760" letter-spacing="0">Subtitler</text>
+  <text x="346" y="156" fill="#96aaa1" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="21" font-weight="520" letter-spacing="0">AI subtitle automation for Sonarr and Radarr libraries</text>
+</svg>

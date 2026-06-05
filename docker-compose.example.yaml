@@ -8,9 +8,12 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       SONARR_API_KEY: ${SONARR_API_KEY}
       RADARR_API_KEY: ${RADARR_API_KEY}
+      SENTRY_DSN: ${SENTRY_DSN:-}
     volumes:
       - ./config.yaml:/config/config.yaml:ro
       - ./data:/config
       # Mount media using the same paths that Sonarr/Radarr report when possible.
+      # Example for a host library at /media:
+      # - /media:/media
       - /mnt/media:/media
     command: ["daemon", "-config", "/config/config.yaml"]

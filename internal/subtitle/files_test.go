@@ -48,3 +48,43 @@ func TestOutputPathIncludesTitleAndJellyfinLanguage(t *testing.T) {
 		t.Fatalf("expected %q, got %q", want, path)
 	}
 }
+
+func TestOutputPathSanitizesTitleAndLanguageFallback(t *testing.T) {
+	path := OutputPath("/media/Show/Episode.mkv", "es-MX", ` My: Bad/Title? `)
+	want := "/media/Show/Episode.my-bad-title.es.srt"
+	if path != want {
+		t.Fatalf("expected %q, got %q", want, path)
+	}
+
+	path = OutputPath("/media/Show/Episode.mkv", "jpn", "")
+	want = "/media/Show/Episode.jpn.srt"
+	if path != want {
+		t.Fatalf("expected %q, got %q", want, path)
+	}
+}
+
+func TestNormalizeLanguageVariants(t *testing.T) {
+	tests := map[string]string{
+		"eng":        "en",
+		"English":    "en",
+		"por":        "pt",
+		"pt_br":      "pt-BR",
+		"pt-pt":      "pt-PT",
+		"spa":        "es",
+		"fra":        "fr",
+		"deu":        "de",
+		"it":         "it",
+		"not-a-lang": "",
+	}
+	for input, want := range tests {
+		if got := normalizeLanguage(input); got != want {
+			t.Fatalf("normalizeLanguage(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestFindSidecarsHandlesReadDirError(t *testing.T) {
+	if _, err := FindSidecars(filepath.Join(t.TempDir(), "missing", "Movie.mkv")); err == nil {
+		t.Fatal("expected missing directory error")
+	}
+}

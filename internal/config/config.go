@@ -16,6 +16,7 @@ type Config struct {
 	Sonarr     ServiceConfig    `yaml:"sonarr"`
 	Radarr     ServiceConfig    `yaml:"radarr"`
 	OpenAI     OpenAIConfig     `yaml:"openai"`
+	Telemetry  TelemetryConfig  `yaml:"telemetry"`
 	Subtitles  SubtitleConfig   `yaml:"subtitles"`
 	Processing ProcessingConfig `yaml:"processing"`
 	Tools      ToolsConfig      `yaml:"tools"`
@@ -33,6 +34,13 @@ type OpenAIConfig struct {
 	BaseURL            string `yaml:"base_url"`
 	Context            string `yaml:"context"`
 	MaxChunkSeconds    int    `yaml:"max_chunk_seconds"`
+}
+
+type TelemetryConfig struct {
+	Enabled     bool   `yaml:"enabled"`
+	SentryDSN   string `yaml:"sentry_dsn"`
+	Environment string `yaml:"environment"`
+	Release     string `yaml:"release"`
 }
 
 type SubtitleConfig struct {
@@ -70,6 +78,7 @@ type ProcessingConfig struct {
 	Concurrency      int           `yaml:"concurrency"`
 	RetryFailedAfter time.Duration `yaml:"retry_failed_after"`
 	MaxAttempts      int           `yaml:"max_attempts"`
+	MaxJobsPerScan   int           `yaml:"max_jobs_per_scan"`
 }
 
 type ToolsConfig struct {
@@ -95,12 +104,27 @@ func Load(path string) (Config, error) {
 	return cfg, nil
 }
 
+func Default() Config {
+	var cfg Config
+	cfg.applyDefaults()
+	return cfg
+}
+
 func (c *Config) applyDefaults() {
 	if c.StatePath == "" {
 		c.StatePath = "subtitler-state.json"
 	}
 	if c.TempDir == "" {
 		c.TempDir = os.TempDir()
+	}
+	if c.Sonarr.APIKey == "" {
+		c.Sonarr.APIKey = os.Getenv("SONARR_API_KEY")
+	}
+	if c.Radarr.APIKey == "" {
+		c.Radarr.APIKey = os.Getenv("RADARR_API_KEY")
+	}
+	if c.OpenAI.APIKey == "" {
+		c.OpenAI.APIKey = os.Getenv("OPENAI_API_KEY")
 	}
 	if c.OpenAI.BaseURL == "" {
 		c.OpenAI.BaseURL = "https://api.openai.com/v1"
@@ -113,6 +137,12 @@ func (c *Config) applyDefaults() {
 	}
 	if c.OpenAI.MaxChunkSeconds <= 0 {
 		c.OpenAI.MaxChunkSeconds = 1200
+	}
+	if c.Telemetry.SentryDSN == "" {
+		c.Telemetry.SentryDSN = os.Getenv("SENTRY_DSN")
+	}
+	if c.Telemetry.Environment == "" {
+		c.Telemetry.Environment = "production"
 	}
 	if len(c.Subtitles.RequiredLanguages) == 0 {
 		c.Subtitles.RequiredLanguages = []string{"en"}
@@ -182,6 +212,9 @@ func (c Config) validate() error {
 	}
 	if strings.TrimSpace(c.OpenAI.TranscriptionModel) == "" {
 		return errors.New("openai.transcription_model is required")
+	}
+	if c.Processing.MaxJobsPerScan < 0 {
+		return errors.New("processing.max_jobs_per_scan cannot be negative")
 	}
 	return nil
 }
