@@ -151,6 +151,40 @@ func TestProcessItemTranslatesTargetLanguage(t *testing.T) {
 	}
 }
 
+func TestProcessItemPrefersConfiguredSourceAudioLanguage(t *testing.T) {
+	videoPath := writeVideo(t)
+	store := newStore(t)
+	app := testApp(config.Config{
+		DryRun:  false,
+		TempDir: t.TempDir(),
+		OpenAI:  config.OpenAIConfig{APIKey: "test", TranscriptionModel: "whisper-1", MaxChunkSeconds: 1200},
+		Subtitles: config.SubtitleConfig{
+			RequiredLanguages:      []string{"en"},
+			SourceAudioLanguages:   []string{"en", "auto"},
+			SourceSubtitleLanguage: "en",
+			Strategy:               "missing_only",
+			Output:                 config.OutputConfig{Title: "subtitler"},
+		},
+	})
+	app.inspector = fakeInspector{
+		audio: []media.AudioStream{
+			{Index: 0, Language: "pt", Default: true},
+			{Index: 1, Language: "en", Default: false},
+		},
+	}
+
+	if _, err := app.processItem(context.Background(), store, itemFor(videoPath)); err != nil {
+		t.Fatal(err)
+	}
+	speech := app.openai.(*fakeSpeech)
+	if len(speech.transcriptionLanguages) != 1 || speech.transcriptionLanguages[0] != "en" {
+		t.Fatalf("expected English transcription request, got %#v", speech.transcriptionLanguages)
+	}
+	if speech.translations != 0 {
+		t.Fatal("expected English source output to avoid translation")
+	}
+}
+
 func TestProcessItemDryRunDoesNotWriteSubtitle(t *testing.T) {
 	videoPath := writeVideo(t)
 	store := newStore(t)
@@ -398,7 +432,9 @@ func TestAppLanguageHelpers(t *testing.T) {
 	}
 }
 
-type fakeInspector struct{}
+type fakeInspector struct {
+	audio []media.AudioStream
+}
 
 func (fakeInspector) CheckTools(context.Context) error { return nil }
 
@@ -406,7 +442,10 @@ func (fakeInspector) DurationMS(context.Context, string) (int, error) {
 	return 10_000, nil
 }
 
-func (fakeInspector) AudioStreams(context.Context, string) ([]media.AudioStream, error) {
+func (f fakeInspector) AudioStreams(context.Context, string) ([]media.AudioStream, error) {
+	if len(f.audio) > 0 {
+		return f.audio, nil
+	}
 	return []media.AudioStream{{Index: 0, Language: "en", Default: true}}, nil
 }
 
@@ -428,12 +467,14 @@ func (fakeInspector) ExtractSubtitles(_ context.Context, _ string, outputs map[s
 }
 
 type fakeSpeech struct {
-	transcriptions int
-	translations   int
+	transcriptions         int
+	translations           int
+	transcriptionLanguages []string
 }
 
-func (f *fakeSpeech) TranscribeSRT(context.Context, string, string, string, string) (string, error) {
+func (f *fakeSpeech) TranscribeSRT(_ context.Context, _ string, _ string, _ string, language string) (string, error) {
 	f.transcriptions++
+	f.transcriptionLanguages = append(f.transcriptionLanguages, language)
 	return "1\n00:00:01,000 --> 00:00:02,000\nHello.\n\n", nil
 }
 

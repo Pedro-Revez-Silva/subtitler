@@ -46,14 +46,16 @@ type TelemetryConfig struct {
 const DefaultTelemetrySentryDSN = "https://64f6ff280bac1f2acec4be2ac491ecbf@o4510866861719552.ingest.de.sentry.io/4511514028802128"
 
 type SubtitleConfig struct {
-	RequiredLanguages []string       `yaml:"required_languages"`
-	AudioLanguage     string         `yaml:"audio_language"`
-	Strategy          string         `yaml:"strategy"`
-	Cleanup           CleanupConfig  `yaml:"cleanup"`
-	Output            OutputConfig   `yaml:"output"`
-	Embedded          EmbeddedConfig `yaml:"embedded"`
-	PathMappings      []PathMapping  `yaml:"path_mappings"`
-	ProtectedSuffixes []string       `yaml:"protected_suffixes"`
+	RequiredLanguages      []string       `yaml:"required_languages"`
+	AudioLanguage          string         `yaml:"audio_language"`
+	SourceAudioLanguages   []string       `yaml:"source_audio_languages"`
+	SourceSubtitleLanguage string         `yaml:"source_subtitle_language"`
+	Strategy               string         `yaml:"strategy"`
+	Cleanup                CleanupConfig  `yaml:"cleanup"`
+	Output                 OutputConfig   `yaml:"output"`
+	Embedded               EmbeddedConfig `yaml:"embedded"`
+	PathMappings           []PathMapping  `yaml:"path_mappings"`
+	ProtectedSuffixes      []string       `yaml:"protected_suffixes"`
 }
 
 type CleanupConfig struct {
@@ -147,8 +149,19 @@ func (c *Config) applyDefaults() {
 	if len(c.Subtitles.RequiredLanguages) == 0 {
 		c.Subtitles.RequiredLanguages = []string{"en"}
 	}
+	if len(c.Subtitles.SourceAudioLanguages) == 0 {
+		legacyAudioLanguage := strings.TrimSpace(c.Subtitles.AudioLanguage)
+		if legacyAudioLanguage != "" && !strings.EqualFold(legacyAudioLanguage, "auto") {
+			c.Subtitles.SourceAudioLanguages = []string{legacyAudioLanguage, "auto"}
+		} else {
+			c.Subtitles.SourceAudioLanguages = []string{"en", "auto"}
+		}
+	}
+	if c.Subtitles.SourceSubtitleLanguage == "" {
+		c.Subtitles.SourceSubtitleLanguage = "en"
+	}
 	if c.Subtitles.AudioLanguage == "" {
-		c.Subtitles.AudioLanguage = "auto"
+		c.Subtitles.AudioLanguage = c.Subtitles.SourceAudioLanguages[0]
 	}
 	if c.Subtitles.Strategy == "" {
 		c.Subtitles.Strategy = "missing_only"
@@ -246,6 +259,14 @@ func (c Config) validate() error {
 	}
 	if strings.TrimSpace(c.OpenAI.TranscriptionModel) == "" {
 		return errors.New("openai.transcription_model is required")
+	}
+	if strings.TrimSpace(c.Subtitles.SourceSubtitleLanguage) == "" {
+		return errors.New("subtitles.source_subtitle_language is required")
+	}
+	for _, language := range c.Subtitles.SourceAudioLanguages {
+		if strings.TrimSpace(language) == "" {
+			return errors.New("subtitles.source_audio_languages cannot contain empty values")
+		}
 	}
 	if c.Processing.MaxJobsPerScan < 0 {
 		return errors.New("processing.max_jobs_per_scan cannot be negative")

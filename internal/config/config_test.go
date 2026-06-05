@@ -68,6 +68,12 @@ subtitles:
 	if cfg.Subtitles.RequiredLanguages[0] != "en" || cfg.Subtitles.Output.Title != "subtitler" {
 		t.Fatalf("expected subtitle defaults, got %#v", cfg.Subtitles)
 	}
+	if len(cfg.Subtitles.SourceAudioLanguages) != 2 || cfg.Subtitles.SourceAudioLanguages[0] != "en" || cfg.Subtitles.SourceAudioLanguages[1] != "auto" {
+		t.Fatalf("expected English-first source audio defaults, got %#v", cfg.Subtitles.SourceAudioLanguages)
+	}
+	if cfg.Subtitles.SourceSubtitleLanguage != "en" {
+		t.Fatalf("expected English source subtitle default, got %q", cfg.Subtitles.SourceSubtitleLanguage)
+	}
 	if cfg.Processing.ScanInterval != 30*time.Minute || cfg.Processing.Concurrency != 1 || cfg.Processing.MaxAttempts != 3 {
 		t.Fatalf("expected processing defaults, got %#v", cfg.Processing)
 	}
@@ -121,6 +127,24 @@ telemetry:
 	}
 }
 
+func TestLoadUsesLegacyAudioLanguageAsSourcePreference(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+subtitles:
+  audio_language: pt-PT
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Subtitles.SourceAudioLanguages) != 2 || cfg.Subtitles.SourceAudioLanguages[0] != "pt-PT" || cfg.Subtitles.SourceAudioLanguages[1] != "auto" {
+		t.Fatalf("expected legacy audio language source preference, got %#v", cfg.Subtitles.SourceAudioLanguages)
+	}
+}
+
 func TestTelemetryEnvironmentOptOut(t *testing.T) {
 	t.Setenv("SUBTITLER_TELEMETRY", "off")
 
@@ -158,6 +182,8 @@ func TestLoadValidationErrors(t *testing.T) {
 		{name: "cleanup", body: "subtitles:\n  cleanup:\n    external_subtitles: burn\n"},
 		{name: "embedded", body: "subtitles:\n  embedded:\n    action: remove\n"},
 		{name: "model", body: "openai:\n  transcription_model: \"   \"\n"},
+		{name: "source language", body: "subtitles:\n  source_subtitle_language: \"   \"\n"},
+		{name: "source audio empty", body: "subtitles:\n  source_audio_languages: [en, \"\"]\n"},
 		{name: "job limit", body: "processing:\n  max_jobs_per_scan: -1\n"},
 	}
 	for _, tt := range tests {

@@ -23,6 +23,21 @@ func TestSelectAudioStreamPrefersRequestedNonCommentary(t *testing.T) {
 	}
 }
 
+func TestSelectAudioStreamByPreferenceUsesFirstMatchingLanguage(t *testing.T) {
+	streams := []AudioStream{
+		{Index: 0, Language: "pt", Title: "Main", Default: true},
+		{Index: 1, Language: "en", Title: "Main", Default: false},
+		{Index: 2, Language: "es", Title: "Main", Default: false},
+	}
+	stream, err := SelectAudioStreamByPreference(streams, []string{"en", "auto"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stream.Index != 1 {
+		t.Fatalf("expected English preference to beat default stream, got %#v", stream)
+	}
+}
+
 func TestSelectAudioStreamFallbacks(t *testing.T) {
 	if _, err := SelectAudioStream(nil, "auto"); err == nil {
 		t.Fatal("expected empty stream error")

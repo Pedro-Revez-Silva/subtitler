@@ -35,7 +35,14 @@ subtitles:
   required_languages:
     - en
     - pt-PT
-  audio_language: auto
+  # Prefer English audio, then fall back to the default audio track.
+  source_audio_languages:
+    - en
+    - auto
+  # Generate this source subtitle first, then translate it to the other required languages.
+  source_subtitle_language: en
+  # Deprecated compatibility option. Use source_audio_languages instead.
+  audio_language: en
   # missing_only: generate only absent target subtitles
   # generated_only: remove external subtitles and regenerate target languages
   # force: regenerate target languages every scan
@@ -44,9 +51,8 @@ subtitles:
     # keep, quarantine, or delete. Use quarantine first, delete once trusted.
     external_subtitles: keep
   embedded:
-    # extract uses embedded subtitles before transcription when matching language tracks exist.
-    # ignore leaves embedded subtitles alone and falls back to generated subtitles.
-    action: extract
+    # ignore keeps generation audio-first. extract reuses matching embedded subtitle tracks.
+    action: ignore
     title: official
   output:
     format: srt

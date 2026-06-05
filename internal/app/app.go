@@ -265,7 +265,7 @@ func (a *App) processItem(ctx context.Context, store *state.Store, item arr.Medi
 		return true, fmt.Errorf("openai.api_key is required to generate subtitles")
 	}
 
-	sourceSRT, sourceLanguage, err := a.transcribe(ctx, item, a.cfg.Subtitles.AudioLanguage)
+	sourceSRT, sourceLanguage, err := a.transcribe(ctx, item)
 	if err != nil {
 		return true, err
 	}
@@ -320,16 +320,16 @@ func (a *App) processItem(ctx context.Context, store *state.Store, item arr.Medi
 	return true, nil
 }
 
-func (a *App) transcribe(ctx context.Context, item arr.MediaItem, language string) (string, string, error) {
+func (a *App) transcribe(ctx context.Context, item arr.MediaItem) (string, string, error) {
 	streams, err := a.inspector.AudioStreams(ctx, item.Path)
 	if err != nil {
 		return "", "", err
 	}
-	stream, err := media.SelectAudioStream(streams, a.cfg.Subtitles.AudioLanguage)
+	stream, err := media.SelectAudioStreamByPreference(streams, a.cfg.Subtitles.SourceAudioLanguages)
 	if err != nil {
 		return "", "", err
 	}
-	transcriptionLanguage, sourceLanguage := transcriptionLanguages(language, stream.Language)
+	transcriptionLanguage, sourceLanguage := transcriptionLanguages(a.cfg.Subtitles.SourceSubtitleLanguage, stream.Language)
 	a.logger.Info("selected audio stream", "path", item.Path, "index", stream.Index, "language", stream.Language, "title", stream.Title)
 
 	chunks, cleanup, err := a.inspector.ExtractAudioChunks(ctx, item.Path, stream, a.cfg.TempDir, a.cfg.OpenAI.MaxChunkSeconds)

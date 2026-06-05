@@ -153,8 +153,8 @@ radarr:
         <h2 id="languages"><span class="step-tag">04</span>Pick languages and strategy</h2>
         <p>
           Set the languages you want and how aggressively to fill them. <code>missing_only</code>
-          writes a target language only when no matching sidecar exists, and embedded tracks are
-          extracted before transcription.
+          writes a target language only when no matching sidecar exists. By default, timings come
+          from the preferred source audio track.
         </p>
         <div class="code">
           <div class="code-head">
@@ -165,9 +165,13 @@ radarr:
   required_languages:
     - en
     - pt-PT
+  source_audio_languages:
+    - en
+    - auto
+  source_subtitle_language: en
   strategy: missing_only        # missing_only | generated_only | force
   embedded:
-    action: extract             # extract | ignore
+    action: ignore              # ignore | extract
   cleanup:
     external_subtitles: keep    # keep | quarantine | delete</code></pre>
         </div>

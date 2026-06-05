@@ -6,7 +6,7 @@
     <title>Subtitler — automatic subtitles for your media library</title>
     <meta
       name="description"
-      content="Self-hosted tool that generates the subtitles your media library is missing. Reuses embedded tracks first, transcribes with OpenAI only when needed, and writes standard SRT sidecars. Integrates with Sonarr and Radarr."
+      content="Self-hosted tool that generates the subtitles your media library is missing. Uses preferred audio tracks for timing, transcribes with OpenAI, and writes standard SRT sidecars. Integrates with Sonarr and Radarr."
     />
     <link rel="icon" href="favicon.png" type="image/png" />
     <link rel="apple-touch-icon" href="apple-touch-icon.png" />
@@ -41,8 +41,8 @@
           <span class="pill"><span class="dot dot--beta"></span> Experimental · early build</span>
           <h1 class="display">Every title,<br /><span class="accent">subtitled.</span></h1>
           <p class="lead">
-            A self-hosted tool that generates the subtitles your media library is missing. It reuses
-            embedded tracks first and only calls OpenAI when it has to — writing clean, standard SRT
+            A self-hosted tool that generates the subtitles your media library is missing. It uses
+            preferred audio tracks for timing and calls OpenAI only when it has to — writing clean, standard SRT
             files. Sonarr and Radarr tell it where your media lives.
           </p>
           <div class="hero-actions">
@@ -53,7 +53,7 @@
             <a class="btn btn--ghost" href="#how">See how it works</a>
           </div>
           <div class="hero-meta">
-            <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Extraction-first</span>
+            <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Audio-first</span>
             <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Dry-run by default</span>
             <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> GPL-3.0</span>
           </div>
@@ -86,7 +86,7 @@
             <div class="step" data-reveal>
               <span class="num">3</span>
               <h3>Extract or generate</h3>
-              <p>Reuses matching embedded tracks first; transcribes with OpenAI only when nothing fits.</p>
+              <p>Transcribes the preferred source audio first, then translates those timed cues when needed.</p>
             </div>
             <div class="step" data-reveal>
               <span class="num">4</span>
@@ -112,8 +112,8 @@
             </article>
             <article class="feature" data-reveal>
               <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.91a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></svg></div>
-              <h3>Extraction-first</h3>
-              <p>Matching embedded tracks are reused before any paid transcription ever happens.</p>
+              <h3>Audio-first</h3>
+              <p>Existing sidecars are respected, while generated subtitles stay tied to the preferred audio track.</p>
             </article>
             <article class="feature" data-reveal>
               <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg></div>

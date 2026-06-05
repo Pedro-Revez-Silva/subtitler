@@ -129,12 +129,19 @@ func (i Inspector) SubtitleStreams(ctx context.Context, videoPath string) ([]Sub
 }
 
 func SelectAudioStream(streams []AudioStream, requestedLanguage string) (AudioStream, error) {
+	return SelectAudioStreamByPreference(streams, []string{requestedLanguage})
+}
+
+func SelectAudioStreamByPreference(streams []AudioStream, requestedLanguages []string) (AudioStream, error) {
 	if len(streams) == 0 {
 		return AudioStream{}, fmt.Errorf("no audio streams found")
 	}
 
-	requestedLanguage = normalizeLanguage(requestedLanguage)
-	if requestedLanguage != "" && requestedLanguage != "auto" {
+	for _, requestedLanguage := range requestedLanguages {
+		requestedLanguage = normalizeLanguage(requestedLanguage)
+		if requestedLanguage == "" || requestedLanguage == "auto" {
+			continue
+		}
 		for _, stream := range streams {
 			if stream.Language == requestedLanguage && !isCommentary(stream.Title) {
 				return stream, nil

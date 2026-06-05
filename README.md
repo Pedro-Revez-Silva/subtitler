@@ -13,7 +13,8 @@ This is an early working implementation:
 - external subtitle cleanup: `keep`, `quarantine`, or `delete`
 - generation strategies: `missing_only`, `generated_only`, `force`
 - MKV/MP4 audio stream inspection with `ffprobe`
-- embedded subtitle extraction before transcription when matching language tracks exist
+- audio-first subtitle timing from a preferred source audio track
+- optional embedded subtitle extraction when explicitly enabled
 - audio extraction/chunking with `ffmpeg`
 - OpenAI transcription to SRT
 - optional SRT translation while preserving timestamps
@@ -22,7 +23,7 @@ This is an early working implementation:
 - per-scan job limit to control first-run cost
 - Sentry telemetry for a one-time anonymous installation signal
 
-Embedded subtitle removal is intentionally not implemented because it requires remuxing media files. Extraction of embedded subtitle tracks is supported and is preferred before transcription.
+Embedded subtitle removal is intentionally not implemented because it requires remuxing media files. Extraction of embedded subtitle tracks is supported, but audio-first generation is the default because it ties subtitle timings to the audio track being watched.
 
 ## Server setup with Docker
 
@@ -110,6 +111,10 @@ It also defaults to conservative subtitle behavior:
 
 ```yaml
 subtitles:
+  source_audio_languages:
+    - en
+    - auto
+  source_subtitle_language: en
   strategy: missing_only
   cleanup:
     external_subtitles: keep
@@ -292,12 +297,18 @@ processing:
 ```yaml
 subtitles:
   required_languages: [en, pt-PT]
+  source_audio_languages: [en, auto]
+  source_subtitle_language: en
   strategy: missing_only
+  embedded:
+    action: ignore
   cleanup:
     external_subtitles: keep
 ```
 
-`missing_only` means the service writes required languages only when it cannot find matching sidecars. It will also extract matching embedded subtitles first when `embedded.action: extract` is enabled.
+`source_audio_languages` controls which audio track is used to create the timed source transcript. `source_subtitle_language` controls the intermediate subtitle language written from that audio before translating to the other required languages. With the example above, Subtitler prefers English audio, writes English timed cues, then translates those same cues to Portuguese.
+
+`missing_only` means the service writes required languages only when it cannot find matching sidecars. Embedded subtitle extraction is available only when `embedded.action: extract` is enabled; keep it disabled for audio-first timing.
 
 If you want generated subtitles to replace subtitle clutter, use `generated_only` with `quarantine` first. Once you trust the file matching behavior, switch to:
 
