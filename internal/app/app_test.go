@@ -310,6 +310,13 @@ func TestRecordFailureIncrementsAttempts(t *testing.T) {
 	if fileState.Attempts != 2 || fileState.LastError != "boom again" {
 		t.Fatalf("unexpected failure state: %#v", fileState)
 	}
+	info, err := os.Stat(videoPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fileState.FileSize != info.Size() || fileState.ModTimeUnix != info.ModTime().Unix() {
+		t.Fatalf("expected failure state to track media fingerprint: %#v", fileState)
+	}
 }
 
 func TestGenerateOneProcessesManualFile(t *testing.T) {

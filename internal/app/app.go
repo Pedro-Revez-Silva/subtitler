@@ -484,6 +484,10 @@ func (a *App) contextFor(item arr.MediaItem) string {
 func (a *App) recordFailure(store *state.Store, item arr.MediaItem, err error) {
 	fileState, _ := store.Get(item.Path)
 	fileState.Source = item.Source
+	if info, statErr := os.Stat(item.Path); statErr == nil {
+		fileState.FileSize = info.Size()
+		fileState.ModTimeUnix = info.ModTime().Unix()
+	}
 	fileState.LastError = err.Error()
 	fileState.Attempts++
 	store.Put(item.Path, fileState)
