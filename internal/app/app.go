@@ -94,13 +94,6 @@ func (a *App) ScanAndProcess(ctx context.Context) error {
 		}
 	}
 	a.logger.Info("scan finished", "processed_jobs", processedJobs, "max_jobs_per_scan", a.cfg.Processing.MaxJobsPerScan)
-	a.telemetry.ScanFinished(telemetry.ScanSummary{
-		Mode:           a.mode,
-		FoundItems:     len(items),
-		ProcessedJobs:  processedJobs,
-		MaxJobsPerScan: a.cfg.Processing.MaxJobsPerScan,
-		DryRun:         a.cfg.DryRun,
-	})
 	return store.Save()
 }
 

@@ -20,7 +20,7 @@ This is an early working implementation:
 - JSON state file for generated outputs and failures
 - periodic daemon scans that process only missing subtitle jobs
 - per-scan job limit to control first-run cost
-- optional Sentry telemetry for anonymous version and scan-count signals
+- Sentry telemetry for a one-time anonymous installation signal
 
 Embedded subtitle removal is intentionally not implemented because it requires remuxing media files. Extraction of embedded subtitle tracks is supported and is preferred before transcription.
 
@@ -41,7 +41,6 @@ Edit `.env`:
 OPENAI_API_KEY=your-openai-api-key
 SONARR_API_KEY=your-sonarr-api-key
 RADARR_API_KEY=your-radarr-api-key
-SENTRY_DSN=
 PUID=1000
 PGID=1000
 ```
@@ -162,22 +161,21 @@ The daemon repeats the library scan every `processing.scan_interval`.
 
 ## Telemetry
 
-Telemetry is disabled by default.
+Telemetry is enabled by default and sends one anonymous `subtitler.installed` message to Sentry the first time an installation starts. The marker is stored in the state file, so normal restarts do not send another install event.
 
-When enabled, Subtitler uses Sentry to send anonymous startup and scan summary events. This is intended to answer basic maintainer questions such as active installation count and most-used version.
+This is intended to answer basic maintainer questions such as installation count and most-used version. To disable it:
 
 ```yaml
 telemetry:
-  enabled: true
-  sentry_dsn: ${SENTRY_DSN}
-  environment: production
+  enabled: false
 ```
+
+You can also set `SUBTITLER_TELEMETRY=off`. `SENTRY_DSN` or `telemetry.sentry_dsn` can be set to override the built-in Sentry project DSN for private builds.
 
 Telemetry sends:
 
 - a random installation ID generated locally and stored in the state file
 - app version, operating system, architecture, and command mode
-- scan counts such as discovered items, processed jobs, and configured job limit
 
 Telemetry does not send media paths, titles, subtitle text, OpenAI prompts, API keys, ARR URLs, or hostnames. Sentry error/panic capture is not enabled by default because arbitrary errors can contain file paths.
 

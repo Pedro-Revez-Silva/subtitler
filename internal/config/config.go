@@ -37,11 +37,13 @@ type OpenAIConfig struct {
 }
 
 type TelemetryConfig struct {
-	Enabled     bool   `yaml:"enabled"`
+	Enabled     *bool  `yaml:"enabled"`
 	SentryDSN   string `yaml:"sentry_dsn"`
 	Environment string `yaml:"environment"`
 	Release     string `yaml:"release"`
 }
+
+const DefaultTelemetrySentryDSN = "https://64f6ff280bac1f2acec4be2ac491ecbf@o4510866861719552.ingest.de.sentry.io/4511514028802128"
 
 type SubtitleConfig struct {
 	RequiredLanguages []string       `yaml:"required_languages"`
@@ -138,9 +140,7 @@ func (c *Config) applyDefaults() {
 	if c.OpenAI.MaxChunkSeconds <= 0 {
 		c.OpenAI.MaxChunkSeconds = 1200
 	}
-	if c.Telemetry.SentryDSN == "" {
-		c.Telemetry.SentryDSN = os.Getenv("SENTRY_DSN")
-	}
+	c.applyTelemetryDefaults()
 	if c.Telemetry.Environment == "" {
 		c.Telemetry.Environment = "production"
 	}
@@ -188,6 +188,40 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Tools.FFprobe == "" {
 		c.Tools.FFprobe = "ffprobe"
+	}
+}
+
+func (c *Config) applyTelemetryDefaults() {
+	if value, ok := parseBoolEnv(os.Getenv("SUBTITLER_TELEMETRY")); ok {
+		c.Telemetry.Enabled = &value
+	}
+	if value, ok := parseBoolEnv(os.Getenv("SUBTITLER_TELEMETRY_ENABLED")); ok {
+		c.Telemetry.Enabled = &value
+	}
+	if c.Telemetry.Enabled == nil {
+		enabled := true
+		c.Telemetry.Enabled = &enabled
+	}
+	if c.Telemetry.SentryDSN == "" {
+		c.Telemetry.SentryDSN = os.Getenv("SENTRY_DSN")
+	}
+	if c.Telemetry.SentryDSN == "" {
+		c.Telemetry.SentryDSN = DefaultTelemetrySentryDSN
+	}
+}
+
+func (t TelemetryConfig) EnabledValue() bool {
+	return t.Enabled == nil || *t.Enabled
+}
+
+func parseBoolEnv(value string) (bool, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on", "enabled":
+		return true, true
+	case "0", "false", "no", "off", "disabled":
+		return false, true
+	default:
+		return false, false
 	}
 }
 

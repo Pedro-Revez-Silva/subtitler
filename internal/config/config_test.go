@@ -33,7 +33,7 @@ processing:
 	if cfg.OpenAI.APIKey != "test-key" {
 		t.Fatalf("expected env-expanded api key, got %q", cfg.OpenAI.APIKey)
 	}
-	if !cfg.Telemetry.Enabled || cfg.Telemetry.SentryDSN != "https://example.invalid/1" {
+	if !cfg.Telemetry.EnabledValue() || cfg.Telemetry.SentryDSN != "https://example.invalid/1" {
 		t.Fatalf("expected env-expanded telemetry config, got %#v", cfg.Telemetry)
 	}
 	if cfg.Processing.ScanInterval != 15*time.Minute {
@@ -71,6 +71,9 @@ subtitles:
 	if cfg.Processing.ScanInterval != 30*time.Minute || cfg.Processing.Concurrency != 1 || cfg.Processing.MaxAttempts != 3 {
 		t.Fatalf("expected processing defaults, got %#v", cfg.Processing)
 	}
+	if !cfg.Telemetry.EnabledValue() || cfg.Telemetry.SentryDSN != DefaultTelemetrySentryDSN {
+		t.Fatalf("expected default telemetry to be enabled with built-in DSN, got %#v", cfg.Telemetry)
+	}
 	if got := cfg.MapPath("/movies/Film/movie.mkv"); got != "/media/movies/Film/movie.mkv" {
 		t.Fatalf("unexpected mapped path %q", got)
 	}
@@ -97,6 +100,33 @@ func TestDefaultUsesEnvironmentFallbacks(t *testing.T) {
 	}
 	if cfg.Telemetry.SentryDSN != "https://sentry.example/1" {
 		t.Fatalf("expected Sentry DSN from env, got %q", cfg.Telemetry.SentryDSN)
+	}
+}
+
+func TestLoadAllowsTelemetryOptOut(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+telemetry:
+  enabled: false
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Telemetry.EnabledValue() {
+		t.Fatal("expected configured telemetry opt-out")
+	}
+}
+
+func TestTelemetryEnvironmentOptOut(t *testing.T) {
+	t.Setenv("SUBTITLER_TELEMETRY", "off")
+
+	cfg := Default()
+	if cfg.Telemetry.EnabledValue() {
+		t.Fatal("expected telemetry env opt-out")
 	}
 }
 

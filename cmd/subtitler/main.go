@@ -198,7 +198,7 @@ func runDoctor(ctx context.Context, logger *slog.Logger, args []string) error {
 }
 
 func initTelemetry(logger *slog.Logger, cfg config.Config, mode string) *telemetry.Client {
-	if !cfg.Telemetry.Enabled {
+	if !cfg.Telemetry.EnabledValue() {
 		return &telemetry.Client{}
 	}
 	store, err := state.Open(cfg.StatePath)
@@ -206,13 +206,12 @@ func initTelemetry(logger *slog.Logger, cfg config.Config, mode string) *telemet
 		logger.Warn("telemetry disabled because state could not be opened", "error", err)
 		return &telemetry.Client{}
 	}
+	if store.TelemetryInstalledSent() {
+		return &telemetry.Client{}
+	}
 	installationID, err := store.InstallationID()
 	if err != nil {
 		logger.Warn("telemetry disabled because installation id could not be created", "error", err)
-		return &telemetry.Client{}
-	}
-	if err := store.Save(); err != nil {
-		logger.Warn("telemetry disabled because installation id could not be saved", "error", err)
 		return &telemetry.Client{}
 	}
 	client, err := telemetry.Init(cfg.Telemetry, installationID, version)
@@ -220,7 +219,12 @@ func initTelemetry(logger *slog.Logger, cfg config.Config, mode string) *telemet
 		logger.Warn("telemetry disabled because Sentry could not initialize", "error", err)
 		return &telemetry.Client{}
 	}
-	client.Started(mode)
+	store.MarkTelemetryInstalledSent()
+	if err := store.Save(); err != nil {
+		logger.Warn("telemetry disabled because install marker could not be saved", "error", err)
+		return &telemetry.Client{}
+	}
+	client.Installed(mode)
 	return client
 }
 

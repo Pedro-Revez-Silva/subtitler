@@ -19,6 +19,10 @@ func TestStoreSaveOpenPutGetAndInstallationID(t *testing.T) {
 	if id == "" {
 		t.Fatal("expected installation id")
 	}
+	if store.TelemetryInstalledSent() {
+		t.Fatal("expected telemetry install marker to start unset")
+	}
+	store.MarkTelemetryInstalledSent()
 	store.Put("/media/movie.mkv", FileState{Source: "radarr"})
 	if err := store.Save(); err != nil {
 		t.Fatal(err)
@@ -37,6 +41,9 @@ func TestStoreSaveOpenPutGetAndInstallationID(t *testing.T) {
 	}
 	if reopenedID, err := reopened.InstallationID(); err != nil || reopenedID != id {
 		t.Fatalf("expected persisted installation id %q, got %q err=%v", id, reopenedID, err)
+	}
+	if !reopened.TelemetryInstalledSent() {
+		t.Fatal("expected persisted telemetry install marker")
 	}
 	fileState, ok := reopened.Get("/media/movie.mkv")
 	if !ok || fileState.Path != "/media/movie.mkv" || fileState.Source != "radarr" {

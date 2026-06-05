@@ -2,7 +2,6 @@ package telemetry
 
 import (
 	"runtime"
-	"strconv"
 	"time"
 
 	"github.com/Pedro-Revez-Silva/subtitler/internal/config"
@@ -13,16 +12,8 @@ type Client struct {
 	enabled bool
 }
 
-type ScanSummary struct {
-	Mode           string
-	FoundItems     int
-	ProcessedJobs  int
-	MaxJobsPerScan int
-	DryRun         bool
-}
-
 func Init(cfg config.TelemetryConfig, installationID, version string) (*Client, error) {
-	if !cfg.Enabled {
+	if !cfg.EnabledValue() || cfg.SentryDSN == "" {
 		return &Client{}, nil
 	}
 
@@ -51,31 +42,14 @@ func Init(cfg config.TelemetryConfig, installationID, version string) (*Client, 
 	return &Client{enabled: true}, nil
 }
 
-func (c *Client) Started(mode string) {
+func (c *Client) Installed(mode string) {
 	if !c.enabled {
 		return
 	}
 	sentry.WithScope(func(scope *sentry.Scope) {
-		scope.SetTag("telemetry.event", "started")
+		scope.SetTag("telemetry.event", "installed")
 		scope.SetTag("mode", mode)
-		sentry.CaptureMessage("subtitler.started")
-	})
-}
-
-func (c *Client) ScanFinished(summary ScanSummary) {
-	if !c.enabled {
-		return
-	}
-	sentry.WithScope(func(scope *sentry.Scope) {
-		scope.SetTag("telemetry.event", "scan_finished")
-		scope.SetTag("mode", summary.Mode)
-		scope.SetTag("dry_run", strconv.FormatBool(summary.DryRun))
-		scope.SetContext("scan", map[string]any{
-			"found_items":       summary.FoundItems,
-			"processed_jobs":    summary.ProcessedJobs,
-			"max_jobs_per_scan": summary.MaxJobsPerScan,
-		})
-		sentry.CaptureMessage("subtitler.scan_finished")
+		sentry.CaptureMessage("subtitler.installed")
 	})
 }
 

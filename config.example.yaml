@@ -24,8 +24,9 @@ openai:
   context: ""
 
 telemetry:
-  # Disabled by default. When enabled, sends anonymous startup and scan summary events to Sentry.
-  enabled: false
+  # Enabled by default. Sends one anonymous installation event, then records it in the state file.
+  enabled: true
+  # Leave empty to use the built-in maintainer Sentry project DSN.
   sentry_dsn: ${SENTRY_DSN}
   environment: production
   release: ""

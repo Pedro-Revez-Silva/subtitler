@@ -15,8 +15,9 @@ type Store struct {
 }
 
 type Data struct {
-	InstallationID string               `json:"installation_id,omitempty"`
-	Files          map[string]FileState `json:"files"`
+	InstallationID       string               `json:"installation_id,omitempty"`
+	TelemetryInstalledAt time.Time            `json:"telemetry_installed_at,omitempty"`
+	Files                map[string]FileState `json:"files"`
 }
 
 type FileState struct {
@@ -81,6 +82,14 @@ func (s *Store) InstallationID() (string, error) {
 	}
 	s.data.InstallationID = id
 	return id, nil
+}
+
+func (s *Store) TelemetryInstalledSent() bool {
+	return !s.data.TelemetryInstalledAt.IsZero()
+}
+
+func (s *Store) MarkTelemetryInstalledSent() {
+	s.data.TelemetryInstalledAt = time.Now()
 }
 
 func (s *Store) Save() error {
