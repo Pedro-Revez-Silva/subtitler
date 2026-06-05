@@ -283,8 +283,12 @@ func (a *App) processItem(ctx context.Context, store *state.Store, item arr.Medi
 		}
 		sourceSRT = subtitle.FormatSRT(sourceCues)
 	}
+	if err := subtitle.ValidateGenerated(sourceCues); err != nil {
+		return true, err
+	}
 
 	for _, language := range toGenerate {
+		outputCues := sourceCues
 		outputSRT := sourceSRT
 		if !sameLanguage(language, sourceLanguage) {
 			a.logger.Info("translating subtitles", "path", item.Path, "from", sourceLanguage, "to", language)
@@ -292,7 +296,11 @@ func (a *App) processItem(ctx context.Context, store *state.Store, item arr.Medi
 			if err != nil {
 				return true, err
 			}
+			outputCues = translatedCues
 			outputSRT = subtitle.FormatSRT(translatedCues)
+		}
+		if err := subtitle.ValidateGenerated(outputCues); err != nil {
+			return true, err
 		}
 		outputPath := subtitle.OutputPath(item.Path, language, a.cfg.Subtitles.Output.Title)
 		if err := os.WriteFile(outputPath, []byte(outputSRT), 0o644); err != nil {
