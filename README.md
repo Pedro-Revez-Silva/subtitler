@@ -271,7 +271,6 @@ Each release publishes Docker images to GitHub Container Registry with these tag
 
 ```text
 ghcr.io/Pedro-Revez-Silva/subtitler:latest
-ghcr.io/Pedro-Revez-Silva/subtitler:YYYY.MM.DD.N
 ghcr.io/Pedro-Revez-Silva/subtitler:vYYYY.MM.DD.N
 ```
 
