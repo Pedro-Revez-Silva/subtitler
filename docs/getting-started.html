@@ -133,10 +133,10 @@ radarr:
             <button class="code-copy" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span class="copy-label">Copy</span></button>
           </div>
           <pre><code>volumes:
-  - ./config.yaml:/config/config.yaml:ro
-  - ./data:/config
+  - ./config.yaml:/etc/subtitler/config.yaml:ro
+  - ./data:/data
   # Match the path Sonarr/Radarr report, e.g.:
-  - /mnt/media:/media</code></pre>
+  - /mnt/media:/mnt/media</code></pre>
         </div>
         <p>If the ARR apps report a path the container can't match exactly, translate it with <code>path_mappings</code>:</p>
         <div class="code">
@@ -188,11 +188,11 @@ radarr:
             <span class="fname">terminal</span>
             <button class="code-copy" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span class="copy-label">Copy</span></button>
           </div>
-          <pre><code>docker compose --env-file .env -f docker-compose.example.yaml build
+          <pre><code>docker compose --env-file .env -f docker-compose.example.yaml pull
 docker compose --env-file .env -f docker-compose.example.yaml \
-  run --rm subtitler doctor -config /config/config.yaml
+  run --rm subtitler doctor -config /etc/subtitler/config.yaml
 docker compose --env-file .env -f docker-compose.example.yaml \
-  run --rm subtitler scan -config /config/config.yaml</code></pre>
+  run --rm subtitler scan -config /etc/subtitler/config.yaml</code></pre>
         </div>
 
         <h2 id="daemon"><span class="step-tag">06</span>Run the daemon</h2>

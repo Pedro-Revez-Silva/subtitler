@@ -159,7 +159,7 @@ cp .env.example .env
 # validate safely (dry-run is on by default)
 docker compose --env-file .env \
   -f docker-compose.example.yaml \
-  run --rm subtitler doctor -config /config/config.yaml
+  run --rm subtitler doctor -config /etc/subtitler/config.yaml
 
 # start the daemon
 docker compose --env-file .env \

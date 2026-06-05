@@ -1,5 +1,5 @@
 dry_run: true
-state_path: /config/subtitler-state.json
+state_path: /data/subtitler-state.json
 temp_dir: /tmp
 
 tools:

@@ -76,16 +76,16 @@ Subtitler does not need its own media-folder config. It asks Sonarr and Radarr f
 The container must be able to read and write those exact paths. If Radarr reports:
 
 ```bash
-/media/movies/Movie Name/Movie.mkv
+/mnt/media/movies/Movie Name/Movie.mkv
 ```
 
 then `docker-compose.example.yaml` should mount the same host path into the same container path:
 
 ```yaml
 volumes:
-  - ./config.yaml:/config/config.yaml:ro
-  - ./data:/config
-  - /media:/media
+  - ./config.yaml:/etc/subtitler/config.yaml:ro
+  - ./data:/data
+  - /mnt/media:/mnt/media
 ```
 
 If matching paths are impossible, use `path_mappings` in `config.yaml`:
@@ -124,11 +124,11 @@ processing:
 
 This means the first real daemon run will only add missing subtitles, will not remove existing sidecars, and will process at most one media item per scan.
 
-### 5. Build and validate
+### 5. Pull and validate
 
 ```bash
-docker compose --env-file .env -f docker-compose.example.yaml build
-docker compose --env-file .env -f docker-compose.example.yaml run --rm subtitler doctor -config /config/config.yaml
+docker compose --env-file .env -f docker-compose.example.yaml pull
+docker compose --env-file .env -f docker-compose.example.yaml run --rm subtitler doctor -config /etc/subtitler/config.yaml
 ```
 
 ### 6. Run a dry scan
@@ -136,7 +136,7 @@ docker compose --env-file .env -f docker-compose.example.yaml run --rm subtitler
 Keep `dry_run: true` and run. If you have already changed the config, add `-dry-run` to force a preview:
 
 ```bash
-docker compose --env-file .env -f docker-compose.example.yaml run --rm subtitler scan -config /config/config.yaml
+docker compose --env-file .env -f docker-compose.example.yaml run --rm subtitler scan -config /etc/subtitler/config.yaml
 ```
 
 Check the logs. The scan should find media through Sonarr/Radarr and report what subtitles it would generate.
@@ -148,7 +148,7 @@ Set `dry_run: false` in `config.yaml` and keep `max_jobs_per_scan: 1`.
 Run one scan manually:
 
 ```bash
-docker compose --env-file .env -f docker-compose.example.yaml run --rm subtitler scan -config /config/config.yaml
+docker compose --env-file .env -f docker-compose.example.yaml run --rm subtitler scan -config /etc/subtitler/config.yaml
 ```
 
 Expected result: one missing media item gets `.subtitler.en.srt` and/or `.subtitler.pt.srt` sidecars next to the video file.
@@ -270,8 +270,8 @@ For example, the first release on June 5, 2026 is `v2026.06.05.1`; the second re
 Each release publishes Docker images to GitHub Container Registry with these tags:
 
 ```text
-ghcr.io/Pedro-Revez-Silva/subtitler:latest
-ghcr.io/Pedro-Revez-Silva/subtitler:vYYYY.MM.DD.N
+ghcr.io/pedro-revez-silva/subtitler:latest
+ghcr.io/pedro-revez-silva/subtitler:vYYYY.MM.DD.N
 ```
 
 ## Gradual library scanning

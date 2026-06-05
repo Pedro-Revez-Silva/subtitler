@@ -1,6 +1,6 @@
 services:
   subtitler:
-    build: .
+    image: ghcr.io/pedro-revez-silva/subtitler:latest
     container_name: subtitler
     restart: unless-stopped
     user: "${PUID:-1000}:${PGID:-1000}"
@@ -11,10 +11,9 @@ services:
       SUBTITLER_TELEMETRY: ${SUBTITLER_TELEMETRY:-}
       SENTRY_DSN: ${SENTRY_DSN:-}
     volumes:
-      - ./config.yaml:/config/config.yaml:ro
-      - ./data:/config
+      - ./config.yaml:/etc/subtitler/config.yaml:ro
+      - ./data:/data
       # Mount media using the same paths that Sonarr/Radarr report when possible.
-      # Example for a host library at /media:
-      # - /media:/media
-      - /mnt/media:/media
-    command: ["daemon", "-config", "/config/config.yaml"]
+      # Example for a host library at /mnt/media:
+      - /mnt/media:/mnt/media
+    command: ["daemon", "-config", "/etc/subtitler/config.yaml"]
