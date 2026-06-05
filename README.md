@@ -1,33 +1,79 @@
-# subtitler
+<div align="center">
 
-Headless subtitle generator and library scanner for Sonarr/Radarr libraries.
+<img src="docs/favicon.png" alt="Subtitler" width="120" />
 
-The service periodically asks Sonarr and Radarr where media files live, removes or quarantines external subtitle clutter according to policy, sends extracted audio chunks to OpenAI for transcription, and writes Jellyfin-compatible `.srt` sidecars next to the media.
+# Subtitler
+
+**Automatic subtitles for your media library.**
+
+Self-hosted and headless — it finds what your library is missing, generates clean
+`.srt` subtitles, and integrates with Sonarr &amp; Radarr to know where your files live.
+
+[![Status](https://img.shields.io/badge/status-experimental-f0852b)](#current-status)
+[![License](https://img.shields.io/badge/license-GPL--3.0-1f3a6d)](LICENSE)
+[![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)](go.mod)
+[![Docker](https://img.shields.io/badge/Docker-GHCR-2496ED?logo=docker&logoColor=white)](#-quick-start-docker)
+[![Powered by OpenAI](https://img.shields.io/badge/transcription-OpenAI-10a37f)](#model-note)
+
+[Quick start](#-quick-start-docker) · [How it works](#-how-it-works) · [Configuration](#-configuration) · [Standalone mode](#-standalone-file-mode) · [Telemetry](#-telemetry)
+
+</div>
+
+---
+
+Subtitler periodically asks Sonarr and Radarr where your media lives, checks what subtitles
+already exist, and generates **only what's missing**. It transcribes audio with OpenAI, can
+translate while preserving timestamps, and writes standard `.srt` sidecars next to each file —
+the kind Jellyfin, Plex, and friends read natively.
+
+It is built to be **safe and economical**: dry-run by default, a per-scan job limit to control
+cost on first runs, and it never reaches for the paid API when a cheaper option exists.
+
+## ✨ Features
+
+- 🎯 **Generates only what's missing** — transcribes with OpenAI and writes an `.srt` per language you require
+- 🔌 **Sonarr &amp; Radarr discovery** — no separate media-folder config; it reads the paths the \*arr apps already manage
+- 🎙️ **Audio-first timing** — ties subtitle timings to a preferred source audio track for accurate sync
+- 🌍 **Optional translation** — translate generated subtitles to extra languages while preserving timestamps
+- 🧹 **Subtitle cleanup policies** — `keep`, `quarantine`, or `delete` external subtitle clutter
+- 🐢 **Controlled rollout** — dry-run mode, `missing_only` strategy, and a per-scan job cap keep first runs predictable
+- 🗺️ **Path mapping** — translate ARR-reported paths to your container mounts when they differ
+- 🐳 **Docker-native** — the image bundles `ffmpeg` and `ffprobe`; the host only needs Docker
+- 🧍 **Standalone mode** — run it on a single file without Sonarr/Radarr or a config file
+
+## 🔭 How it works
+
+| | Step | What happens |
+|---|---|---|
+| 1 | **Locate media** | Asks the Sonarr and Radarr APIs for the canonical path of every file |
+| 2 | **Inspect** | Checks existing sidecars and embedded streams against your required languages |
+| 3 | **Generate** | Builds a timed transcript from a source audio track, then translates to the other languages |
+| 4 | **Write** | Saves standard `.srt` sidecars next to the video and records state for retries |
 
 ## Current status
 
-This is an early working implementation:
+This is an early, working implementation — useful today, still evolving:
 
-- Sonarr/Radarr API discovery
-- path mapping for container path differences
+- Sonarr/Radarr API discovery and per-container path mapping
 - external subtitle cleanup: `keep`, `quarantine`, or `delete`
 - generation strategies: `missing_only`, `generated_only`, `force`
 - MKV/MP4 audio stream inspection with `ffprobe`
 - audio-first subtitle timing from a preferred source audio track
 - optional embedded subtitle extraction when explicitly enabled
-- audio extraction/chunking with `ffmpeg`
-- OpenAI transcription to SRT
+- audio extraction/chunking with `ffmpeg`, OpenAI transcription to SRT
 - optional SRT translation while preserving timestamps
 - JSON state file for generated outputs and failures
-- periodic daemon scans that process only missing subtitle jobs
-- per-scan job limit to control first-run cost
-- Sentry telemetry for a one-time anonymous installation signal
+- periodic daemon scans that process only missing-subtitle jobs, with a per-scan job limit
+- a one-time anonymous installation signal (see [Telemetry](#-telemetry))
 
-Embedded subtitle removal is intentionally not implemented because it requires remuxing media files. Extraction of embedded subtitle tracks is supported, but audio-first generation is the default because it ties subtitle timings to the audio track being watched.
+Embedded subtitle *removal* is intentionally not implemented because it requires remuxing media
+files. Embedded *extraction* is supported, but audio-first generation is the default because it
+ties subtitle timings to the audio track being watched.
 
-## Server setup with Docker
+## 🚀 Quick start (Docker)
 
-The recommended setup is Docker. The image includes `ffmpeg` and `ffprobe`, so the host only needs Docker and access to the media folders.
+Docker is the recommended setup. The image includes `ffmpeg` and `ffprobe`, so the host only
+needs Docker and access to the media folders.
 
 ### 1. Copy the example files
 
@@ -46,16 +92,9 @@ PUID=1000
 PGID=1000
 ```
 
-Set `PUID` and `PGID` to the user that owns your media files:
-
-```bash
-id -u
-id -g
-```
+Set `PUID` and `PGID` to the user that owns your media files (`id -u` and `id -g`).
 
 ### 2. Configure Sonarr and Radarr
-
-Set the ARR URLs and API keys in `config.yaml`:
 
 ```yaml
 sonarr:
@@ -67,19 +106,14 @@ radarr:
   api_key: ${RADARR_API_KEY}
 ```
 
-Use URLs that are reachable from the subtitler container. If subtitler runs in the same Docker network as Sonarr/Radarr, container names like `http://sonarr:8989` can work. If Sonarr/Radarr run on the host or another machine, use the reachable host/IP instead.
+Use URLs reachable from the subtitler container. Container names like `http://sonarr:8989` work
+when everything shares a Docker network; otherwise use a reachable host/IP.
 
 ### 3. Mount the media paths
 
-Subtitler does not need its own media-folder config. It asks Sonarr and Radarr for media file paths through their APIs.
-
-The container must be able to read and write those exact paths. If Radarr reports:
-
-```bash
-/mnt/media/movies/Movie Name/Movie.mkv
-```
-
-then `docker-compose.example.yaml` should mount the same host path into the same container path:
+Subtitler does not need its own media-folder config — it asks Sonarr and Radarr for paths through
+their APIs. The container must read and write those **exact** paths. If Radarr reports
+`/mnt/media/movies/Movie Name/Movie.mkv`, mount the same path:
 
 ```yaml
 volumes:
@@ -88,7 +122,7 @@ volumes:
   - /mnt/media:/mnt/media
 ```
 
-If matching paths are impossible, use `path_mappings` in `config.yaml`:
+If matching paths is impossible, translate them with `path_mappings` in `config.yaml`:
 
 ```yaml
 subtitles:
@@ -97,19 +131,12 @@ subtitles:
       to: /media/movies
 ```
 
-That means a Radarr path like `/movies/Movie Name/Movie.mkv` is processed as `/media/movies/Movie Name/Movie.mkv` inside the subtitler container.
-
 ### 4. Keep first-run settings safe
 
-The example config starts in dry-run mode:
+The example config starts in dry-run mode and conservative behavior:
 
 ```yaml
 dry_run: true
-```
-
-It also defaults to conservative subtitle behavior:
-
-```yaml
 subtitles:
   source_audio_languages:
     - en
@@ -122,7 +149,8 @@ processing:
   max_jobs_per_scan: 1
 ```
 
-This means the first real daemon run will only add missing subtitles, will not remove existing sidecars, and will process at most one media item per scan.
+The first real run will only add missing subtitles, won't remove existing sidecars, and will
+process at most one media item per scan.
 
 ### 5. Pull and validate
 
@@ -133,29 +161,26 @@ docker compose --env-file .env -f docker-compose.example.yaml run --rm subtitler
 
 ### 6. Run a dry scan
 
-Keep `dry_run: true` and run. If you have already changed the config, add `-dry-run` to force a preview:
+Keep `dry_run: true` (or add `-dry-run` to force a preview):
 
 ```bash
 docker compose --env-file .env -f docker-compose.example.yaml run --rm subtitler scan -config /etc/subtitler/config.yaml
 ```
 
-Check the logs. The scan should find media through Sonarr/Radarr and report what subtitles it would generate.
+The scan should find media through Sonarr/Radarr and report what it would generate.
 
 ### 7. Run one real job
 
-Set `dry_run: false` in `config.yaml` and keep `max_jobs_per_scan: 1`.
-
-Run one scan manually:
+Set `dry_run: false` and keep `max_jobs_per_scan: 1`, then:
 
 ```bash
 docker compose --env-file .env -f docker-compose.example.yaml run --rm subtitler scan -config /etc/subtitler/config.yaml
 ```
 
-Expected result: one missing media item gets `.subtitler.en.srt` and/or `.subtitler.pt.srt` sidecars next to the video file.
+Expected result: one missing item gets `.subtitler.en.srt` and/or `.subtitler.pt.srt` sidecars
+next to the video.
 
 ### 8. Start the daemon
-
-Once the dry scan and one real scan look right:
 
 ```bash
 docker compose --env-file .env -f docker-compose.example.yaml up -d
@@ -164,47 +189,77 @@ docker compose --env-file .env -f docker-compose.example.yaml logs -f subtitler
 
 The daemon repeats the library scan every `processing.scan_interval`.
 
-## Telemetry
+## 🔧 Configuration
 
-Telemetry is enabled by default and sends one anonymous `subtitler.installed` message to Sentry the first time an installation starts. The marker is stored in the state file, so normal restarts do not send another install event.
-
-This is intended to answer basic maintainer questions such as installation count and most-used version. To disable it:
+### Gradual library scanning
 
 ```yaml
-telemetry:
-  enabled: false
+dry_run: false
+subtitles:
+  strategy: missing_only
+  cleanup:
+    external_subtitles: keep
+processing:
+  scan_interval: 30m
+  max_jobs_per_scan: 1
 ```
 
-You can also set `SUBTITLER_TELEMETRY=off`. `SENTRY_DSN` or `telemetry.sentry_dsn` can be set to override the built-in Sentry project DSN for private builds.
+`max_jobs_per_scan` limits media items that actually need subtitle work. Files that already have
+the required sidecars do not consume that budget. Set it to `0` only when you are comfortable
+letting the scanner process every missing item it finds in one scan.
 
-Telemetry sends:
+### Important choices
 
-- a random installation ID generated locally and stored in the state file
-- app version, operating system, architecture, and command mode
-
-Telemetry does not send media paths, titles, subtitle text, OpenAI prompts, API keys, ARR URLs, or hostnames. Sentry error/panic capture is not enabled by default because arbitrary errors can contain file paths.
-
-## Local development
-
-You need Go 1.25.11 or newer plus `ffmpeg`/`ffprobe` available on the host for local non-Docker runs.
-
-```bash
-export OPENAI_API_KEY=...
-export SONARR_API_KEY=...
-export RADARR_API_KEY=...
-go run ./cmd/subtitler doctor -config config.yaml
-go run ./cmd/subtitler scan -config config.yaml -dry-run
+```yaml
+subtitles:
+  required_languages: [en, pt-PT]
+  source_audio_languages: [en, auto]
+  source_subtitle_language: en
+  strategy: missing_only
+  embedded:
+    action: ignore
+  cleanup:
+    external_subtitles: keep
 ```
 
-To process one file manually:
+`source_audio_languages` controls which audio track is used to create the timed source transcript.
+`source_subtitle_language` is the intermediate subtitle language written from that audio before
+translating to the other required languages. With the example above, Subtitler prefers English
+audio, writes English timed cues, then translates those cues to Portuguese.
 
-```bash
-go run ./cmd/subtitler generate -config config.yaml "/path/to/movie.mkv"
+`missing_only` writes required languages only when it cannot find matching sidecars. Embedded
+subtitle extraction is available only when `embedded.action: extract` is enabled — keep it disabled
+for audio-first timing.
+
+To let generated subtitles replace clutter, use `generated_only` with `quarantine` first. Once you
+trust the matching behavior:
+
+```yaml
+cleanup:
+  external_subtitles: delete
 ```
 
-## Standalone file mode
+### Model note
 
-Subtitler can also run as a plain executable without Sonarr/Radarr and without a config file. This is useful when you just want subtitles for one file.
+Timestamped subtitle generation currently uses OpenAI `whisper-1` with `response_format=srt`. Newer
+transcription models can produce stronger transcripts, but the current implementation requires
+native SRT timestamps for usable timing.
+
+### Packaging note
+
+The intended setup-and-forget deployment is Docker; the image installs `ffmpeg` and `ffprobe`. If
+you run the Go binary directly on a host, those tools must be installed or configured:
+
+```yaml
+tools:
+  ffmpeg: /path/to/ffmpeg
+  ffprobe: /path/to/ffprobe
+```
+
+## 🧍 Standalone file mode
+
+Subtitler can run as a plain executable without Sonarr/Radarr and without a config file — handy
+when you just want subtitles for one file.
 
 ```bash
 export OPENAI_API_KEY=...
@@ -220,112 +275,80 @@ If `config.yaml` is not present and `-config` is not passed, `generate` uses saf
 - uses `gpt-4o-mini` only when translation is needed
 - keeps local state in `subtitler-state.json`
 
-Passing `-config custom.yaml` makes the config explicit; if that file is missing, the command fails instead of silently falling back.
+Passing `-config custom.yaml` makes the config explicit; if that file is missing, the command fails
+instead of silently falling back.
 
-To run continuously:
+## 📡 Telemetry
+
+Telemetry is enabled by default and sends **one** anonymous `subtitler.installed` message to Sentry
+the first time an installation starts. The marker is stored in the state file, so normal restarts
+do not send another event. It exists to answer basic maintainer questions like installation count
+and most-used version.
+
+Disable it any time:
+
+```yaml
+telemetry:
+  enabled: false
+```
+
+You can also set `SUBTITLER_TELEMETRY=off`. `SENTRY_DSN` (or `telemetry.sentry_dsn`) overrides the
+built-in DSN for private builds.
+
+It sends a locally generated random installation ID, plus app version, OS, architecture, and command
+mode. It **never** sends media paths, titles, subtitle text, OpenAI prompts, API keys, ARR URLs, or
+hostnames. Sentry error/panic capture is off by default because arbitrary errors can contain file paths.
+
+## 🛠️ Local development
+
+You need Go 1.25.11 or newer plus `ffmpeg`/`ffprobe` on the host for local non-Docker runs.
 
 ```bash
+export OPENAI_API_KEY=...
+export SONARR_API_KEY=...
+export RADARR_API_KEY=...
+go run ./cmd/subtitler doctor -config config.yaml
+go run ./cmd/subtitler scan -config config.yaml -dry-run
+```
+
+Process one file manually, or run continuously:
+
+```bash
+go run ./cmd/subtitler generate -config config.yaml "/path/to/movie.mkv"
 go run ./cmd/subtitler daemon -config config.yaml
 ```
 
-The static project website lives under `docs/` and can be served by GitHub Pages or any static file host.
-
-Brand assets live under `assets/`. The website keeps its own SVG copies in `docs/` so GitHub Pages can serve the favicon and navigation logo directly.
-
-## Release cadence
-
-CI runs on pull requests and pushes to `main`/`dev`. It runs the local quality gate, `go vet`, a binary build, a Docker build check, and an advisory `govulncheck` scan.
-
-The local quality gate is:
+### Quality gate
 
 ```bash
-# Fast local check
-bin/quality fast
-
-# Pre-commit style check: format, tests, and 95% core coverage
-bin/quality commit
-
-# Pre-push style check: commit gate, vet, Docker build, and govulncheck
-bin/quality push
-
-# Coverage only
-bin/quality coverage
-
-# Whole-repo coverage report, currently informational
-bin/quality coverage-all
+bin/quality fast          # fast local check
+bin/quality commit        # format, tests, and 95% core coverage
+bin/quality push          # commit gate, vet, Docker build, govulncheck
+bin/quality coverage      # coverage only
+bin/quality coverage-all  # whole-repo coverage report (informational)
 ```
 
-The enforced coverage gate is 95% for deterministic core packages: `internal/config` and `internal/subtitle`. Whole-repo coverage is reported separately because the app orchestration, media shell wrappers, OpenAI HTTP boundary, and telemetry contain integration-heavy behavior that should move behind targeted fakes or integration tests before being made part of a hard public gate.
+CI runs on pull requests and pushes to `main`/`dev`: the local quality gate, `go vet`, a binary
+build, a Docker build check, and an advisory `govulncheck` scan. The enforced coverage gate is 95%
+for the deterministic core packages `internal/config` and `internal/subtitle`.
 
-Public releases are scheduled instead of created on every merge. The release workflow runs every 12 hours and can also be started manually. It creates a release only when `main` has changed since the latest release tag.
+The static project website lives under [`docs/`](docs/) and can be served by GitHub Pages or any
+static host. Brand assets live under [`assets/`](assets/).
 
-Release tags use date-based versions:
+## 📦 Releases
 
-```text
-vYYYY.MM.DD.N
-```
+Public releases are scheduled rather than created on every merge. The release workflow runs every
+12 hours (and can be started manually); it creates a release only when `main` has changed since the
+latest release tag.
 
-For example, the first release on June 5, 2026 is `v2026.06.05.1`; the second release that same day is `v2026.06.05.2`.
-
-Each release publishes Docker images to GitHub Container Registry with these tags:
+Release tags use date-based versions — `vYYYY.MM.DD.N` (e.g. `v2026.06.05.1`, then `v2026.06.05.2`
+later the same day). Each release publishes Docker images to GitHub Container Registry:
 
 ```text
 ghcr.io/pedro-revez-silva/subtitler:latest
 ghcr.io/pedro-revez-silva/subtitler:vYYYY.MM.DD.N
 ```
 
-## Gradual library scanning
+## 📄 License
 
-To let the scanner process the library gradually, keep:
-
-```yaml
-dry_run: false
-subtitles:
-  strategy: missing_only
-  cleanup:
-    external_subtitles: keep
-processing:
-  scan_interval: 30m
-  max_jobs_per_scan: 1
-```
-
-`max_jobs_per_scan` limits media items that actually need subtitle work. Files that already have the required sidecars do not consume that budget. Set it to `0` only when you are comfortable letting the scanner process every missing item it finds in one scan.
-
-## Important config choices
-
-```yaml
-subtitles:
-  required_languages: [en, pt-PT]
-  source_audio_languages: [en, auto]
-  source_subtitle_language: en
-  strategy: missing_only
-  embedded:
-    action: ignore
-  cleanup:
-    external_subtitles: keep
-```
-
-`source_audio_languages` controls which audio track is used to create the timed source transcript. `source_subtitle_language` controls the intermediate subtitle language written from that audio before translating to the other required languages. With the example above, Subtitler prefers English audio, writes English timed cues, then translates those same cues to Portuguese.
-
-`missing_only` means the service writes required languages only when it cannot find matching sidecars. Embedded subtitle extraction is available only when `embedded.action: extract` is enabled; keep it disabled for audio-first timing.
-
-If you want generated subtitles to replace subtitle clutter, use `generated_only` with `quarantine` first. Once you trust the file matching behavior, switch to:
-
-```yaml
-cleanup:
-  external_subtitles: delete
-```
-
-## Model note
-
-Timestamped subtitle generation currently uses OpenAI `whisper-1` with `response_format=srt`. Newer transcription models can produce stronger transcripts, but the current implementation requires native SRT timestamps for usable subtitle timing.
-
-## Packaging note
-
-The intended setup-and-forget deployment is Docker. The image installs `ffmpeg` and `ffprobe`, so the media tooling is contained in the service container. If you run the Go binary directly on a host, those tools must be installed or configured with:
-
-```yaml
-tools:
-  ffmpeg: /path/to/ffmpeg
-  ffprobe: /path/to/ffprobe
-```
+[GPL-3.0](LICENSE).
