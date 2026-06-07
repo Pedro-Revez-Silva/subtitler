@@ -357,7 +357,14 @@ func (a *App) transcribe(ctx context.Context, item arr.MediaItem) (string, strin
 		if err != nil {
 			return "", "", err
 		}
-		cues = append(cues, subtitle.Offset(chunkCues, chunk.OffsetMS)...)
+		if err := subtitle.ValidateCueQuality(chunkCues); err != nil {
+			return "", "", fmt.Errorf("chunk %d failed quality check before continuing: %w", chunk.ChunkNumber, err)
+		}
+		candidateCues := append(cues, subtitle.Offset(chunkCues, chunk.OffsetMS)...)
+		if err := subtitle.ValidateCueQuality(candidateCues); err != nil {
+			return "", "", fmt.Errorf("transcription failed quality check after chunk %d: %w", chunk.ChunkNumber, err)
+		}
+		cues = candidateCues
 	}
 	return subtitle.FormatSRT(cues), sourceLanguage, nil
 }

@@ -6,13 +6,16 @@ import (
 	"strings"
 )
 
-var poisonedTextRE = regexp.MustCompile(`(?i)(\b(?:aac|hevc|web[.-]?dl|web\.hevc|10bit|2160p|1080p|lucy|x264|x265)\b|\.com\b|release group|codec names|watermark text|avoid release)`)
+var poisonedTextRE = regexp.MustCompile(`(?i)(\b(?:aac|hevc|web[.-]?dl|web\.hevc|10bit|2160p|1080p|x264|x265)\b|\.com\b|release group|codec names|watermark text|avoid release)`)
 
 func ValidateGenerated(cues []Cue) error {
 	if len(cues) == 0 {
 		return fmt.Errorf("generated subtitles contain no cues")
 	}
+	return ValidateCueQuality(cues)
+}
 
+func ValidateCueQuality(cues []Cue) error {
 	longTextCounts := map[string]int{}
 	poisoned := 0
 	fictionBoilerplate := 0

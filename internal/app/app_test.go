@@ -223,6 +223,39 @@ func TestProcessItemPrefersConfiguredSourceAudioLanguage(t *testing.T) {
 	}
 }
 
+func TestProcessItemStopsTranscribingAfterEarlyQualityFailure(t *testing.T) {
+	videoPath := writeVideo(t)
+	store := newStore(t)
+	app := testApp(config.Config{
+		DryRun:    false,
+		TempDir:   t.TempDir(),
+		OpenAI:    config.OpenAIConfig{APIKey: "test", TranscriptionModel: "whisper-1", MaxChunkSeconds: 1200},
+		Subtitles: config.SubtitleConfig{RequiredLanguages: []string{"en"}, Strategy: "missing_only", Output: config.OutputConfig{Title: "subtitler"}},
+	})
+	app.inspector = fakeInspector{chunks: []media.Chunk{
+		{Path: "chunk-1.mp3", OffsetMS: 0, ChunkNumber: 1},
+		{Path: "chunk-2.mp3", OffsetMS: 60_000, ChunkNumber: 2},
+	}}
+	app.openai = &fakeSpeech{transcriptionOutputs: []string{
+		"1\n00:00:01,000 --> 00:00:02,000\nThe.Movie.2026.2160p.WEB-DL.HEVC\n\n",
+		"1\n00:00:01,000 --> 00:00:02,000\nHello.\n\n",
+	}}
+
+	didWork, err := app.processItem(context.Background(), store, itemFor(videoPath))
+	if err == nil {
+		t.Fatal("expected quality failure")
+	}
+	if !didWork {
+		t.Fatal("expected attempted generation work")
+	}
+	if !strings.Contains(err.Error(), "chunk 1 failed quality check") {
+		t.Fatalf("expected chunk quality failure, got %v", err)
+	}
+	if app.openai.(*fakeSpeech).transcriptions != 1 {
+		t.Fatalf("expected transcription to stop after first bad chunk, got %d calls", app.openai.(*fakeSpeech).transcriptions)
+	}
+}
+
 func TestProcessItemDryRunDoesNotWriteSubtitle(t *testing.T) {
 	videoPath := writeVideo(t)
 	store := newStore(t)
@@ -481,6 +514,7 @@ func TestAppLanguageHelpers(t *testing.T) {
 type fakeInspector struct {
 	audio     []media.AudioStream
 	subtitles []media.SubtitleStream
+	chunks    []media.Chunk
 }
 
 func (fakeInspector) CheckTools(context.Context) error { return nil }
@@ -500,7 +534,10 @@ func (f fakeInspector) SubtitleStreams(context.Context, string) ([]media.Subtitl
 	return f.subtitles, nil
 }
 
-func (fakeInspector) ExtractAudioChunks(context.Context, string, media.AudioStream, string, int) ([]media.Chunk, func(), error) {
+func (f fakeInspector) ExtractAudioChunks(context.Context, string, media.AudioStream, string, int) ([]media.Chunk, func(), error) {
+	if len(f.chunks) > 0 {
+		return f.chunks, func() {}, nil
+	}
 	return []media.Chunk{{Path: "chunk.mp3", OffsetMS: 0, ChunkNumber: 1}}, func() {}, nil
 }
 
@@ -517,11 +554,15 @@ type fakeSpeech struct {
 	transcriptions         int
 	translations           int
 	transcriptionLanguages []string
+	transcriptionOutputs   []string
 }
 
 func (f *fakeSpeech) TranscribeSRT(_ context.Context, _ string, _ string, _ string, language string) (string, error) {
 	f.transcriptions++
 	f.transcriptionLanguages = append(f.transcriptionLanguages, language)
+	if len(f.transcriptionOutputs) >= f.transcriptions {
+		return f.transcriptionOutputs[f.transcriptions-1], nil
+	}
 	return "1\n00:00:01,000 --> 00:00:02,000\nHello.\n\n", nil
 }
 

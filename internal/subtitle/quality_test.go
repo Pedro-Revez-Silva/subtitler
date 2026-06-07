@@ -13,6 +13,16 @@ func TestValidateGeneratedRejectsPoisonedReleaseText(t *testing.T) {
 	}
 }
 
+func TestValidateGeneratedAllowsLucyAsDialogue(t *testing.T) {
+	cues := []Cue{
+		{StartMS: 1, EndMS: 2, Text: "Lucy, stay with me."},
+	}
+
+	if err := ValidateGenerated(cues); err != nil {
+		t.Fatalf("expected Lucy as dialogue to pass, got %v", err)
+	}
+}
+
 func TestValidateGeneratedRejectsRepeatedBoilerplate(t *testing.T) {
 	cues := []Cue{
 		{StartMS: 1, EndMS: 2, Text: "This movie is a work of fiction."},
