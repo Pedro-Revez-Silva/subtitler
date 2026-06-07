@@ -70,6 +70,11 @@ Embedded subtitle *removal* is intentionally not implemented because it requires
 files. Embedded *extraction* is supported, but audio-first generation is the default because it
 ties subtitle timings to the audio track being watched.
 
+OpenAI transcription uploads are limited to 25 MB. Subtitler extracts mono 64 kbps MP3 audio and
+defaults to 20 minute chunks with a 24 MB safety ceiling, then validates each chunk as it is
+transcribed. If a chunk looks like a hallucination, only that chunk is retried instead of throwing
+away the whole movie transcription.
+
 ## 🚀 Quick start (Docker)
 
 Docker is the recommended setup. The image includes `ffmpeg` and `ffprobe`, so the host only

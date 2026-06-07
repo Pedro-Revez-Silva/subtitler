@@ -161,7 +161,14 @@ radarr:
             <span class="fname">config.yaml</span>
             <button class="code-copy" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span class="copy-label">Copy</span></button>
           </div>
-          <pre><code>subtitles:
+          <pre><code>openai:
+  # 20 minute chunks, capped by a 24 MB upload safety ceiling.
+  # Failed chunks are retried twice before the file is marked failed.
+  max_chunk_seconds: 1200
+  max_chunk_bytes: 24000000
+  chunk_retries: 2
+
+subtitles:
   required_languages:
     - en
     - pt-PT

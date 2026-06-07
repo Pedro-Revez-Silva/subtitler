@@ -20,7 +20,12 @@ openai:
   # transcription backend gains native subtitle timestamps.
   transcription_model: whisper-1
   translation_model: gpt-4o-mini
+  # OpenAI transcription uploads are capped at 25 MB. Subtitler encodes mono
+  # 64 kbps MP3 chunks and keeps a 24 MB safety ceiling.
   max_chunk_seconds: 1200
+  max_chunk_bytes: 24000000
+  # Retries only the failed chunk when validation detects likely hallucination.
+  chunk_retries: 2
   context: ""
 
 telemetry:

@@ -33,7 +33,7 @@ type mediaInspector interface {
 	DurationMS(context.Context, string) (int, error)
 	AudioStreams(context.Context, string) ([]media.AudioStream, error)
 	SubtitleStreams(context.Context, string) ([]media.SubtitleStream, error)
-	ExtractAudioChunks(context.Context, string, media.AudioStream, string, int) ([]media.Chunk, func(), error)
+	ExtractAudioChunks(context.Context, string, media.AudioStream, string, int, int64) ([]media.Chunk, func(), error)
 	ExtractSubtitles(context.Context, string, map[string]media.SubtitleStreamOutput) error
 }
 
@@ -337,7 +337,7 @@ func (a *App) transcribe(ctx context.Context, item arr.MediaItem) (string, strin
 	transcriptionLanguage, sourceLanguage := transcriptionLanguages(a.cfg.Subtitles.SourceSubtitleLanguage, stream.Language)
 	a.logger.Info("selected audio stream", "path", item.Path, "index", stream.Index, "language", stream.Language, "title", stream.Title)
 
-	chunks, cleanup, err := a.inspector.ExtractAudioChunks(ctx, item.Path, stream, a.cfg.TempDir, a.cfg.OpenAI.MaxChunkSeconds)
+	chunks, cleanup, err := a.inspector.ExtractAudioChunks(ctx, item.Path, stream, a.cfg.TempDir, a.cfg.OpenAI.MaxChunkSeconds, a.cfg.OpenAI.MaxChunkBytes)
 	if err != nil {
 		return "", "", err
 	}
@@ -348,25 +348,69 @@ func (a *App) transcribe(ctx context.Context, item arr.MediaItem) (string, strin
 
 	var cues []subtitle.Cue
 	for _, chunk := range chunks {
-		a.logger.Info("transcribing audio chunk", "path", item.Path, "chunk", chunk.ChunkNumber, "offset_ms", chunk.OffsetMS)
-		srt, err := a.openai.TranscribeSRT(ctx, chunk.Path, a.cfg.OpenAI.TranscriptionModel, a.contextFor(item), openAILanguage(transcriptionLanguage))
+		chunkCues, err := a.transcribeChunk(ctx, item, chunk, transcriptionLanguage, cues)
 		if err != nil {
 			return "", "", err
+		}
+		cues = append(cues, subtitle.Offset(chunkCues, chunk.OffsetMS)...)
+	}
+	return subtitle.FormatSRT(cues), sourceLanguage, nil
+}
+
+func (a *App) transcribeChunk(ctx context.Context, item arr.MediaItem, chunk media.Chunk, transcriptionLanguage string, previousCues []subtitle.Cue) ([]subtitle.Cue, error) {
+	var lastErr error
+	attempts := a.cfg.OpenAI.ChunkRetries + 1
+	for attempt := 1; attempt <= attempts; attempt++ {
+		prompt := a.contextFor(item)
+		if attempt > 1 {
+			prompt = retryContext(prompt, lastErr)
+		}
+		a.logger.Info("transcribing audio chunk", "path", item.Path, "chunk", chunk.ChunkNumber, "offset_ms", chunk.OffsetMS, "attempt", attempt, "max_attempts", attempts)
+		srt, err := a.openai.TranscribeSRT(ctx, chunk.Path, a.cfg.OpenAI.TranscriptionModel, prompt, openAILanguage(transcriptionLanguage))
+		if err != nil {
+			return nil, err
 		}
 		chunkCues, err := subtitle.ParseSRT(srt)
 		if err != nil {
-			return "", "", err
+			return nil, err
 		}
 		if err := subtitle.ValidateCueQuality(chunkCues); err != nil {
-			return "", "", fmt.Errorf("chunk %d failed quality check before continuing: %w", chunk.ChunkNumber, err)
+			lastErr = err
+			a.logChunkQualityFailure(item.Path, chunk, attempt, attempts, err)
+			continue
 		}
-		candidateCues := append(cues, subtitle.Offset(chunkCues, chunk.OffsetMS)...)
+		candidateCues := append(slices.Clone(previousCues), subtitle.Offset(chunkCues, chunk.OffsetMS)...)
 		if err := subtitle.ValidateCueQuality(candidateCues); err != nil {
-			return "", "", fmt.Errorf("transcription failed quality check after chunk %d: %w", chunk.ChunkNumber, err)
+			lastErr = err
+			a.logChunkQualityFailure(item.Path, chunk, attempt, attempts, err)
+			continue
 		}
-		cues = candidateCues
+		if attempt > 1 {
+			a.logger.Info("audio chunk passed quality check after retry", "path", item.Path, "chunk", chunk.ChunkNumber, "attempt", attempt)
+		}
+		return chunkCues, nil
 	}
-	return subtitle.FormatSRT(cues), sourceLanguage, nil
+	return nil, fmt.Errorf("chunk %d failed quality check after %d attempt(s): %w", chunk.ChunkNumber, attempts, lastErr)
+}
+
+func (a *App) logChunkQualityFailure(path string, chunk media.Chunk, attempt, maxAttempts int, err error) {
+	attrs := []any{"path", path, "chunk", chunk.ChunkNumber, "offset_ms", chunk.OffsetMS, "attempt", attempt, "max_attempts", maxAttempts, "error", err}
+	if qualityErr, ok := subtitle.AsQualityError(err); ok {
+		attrs = append(attrs, "quality_reason", qualityErr.Reason, "quality_count", qualityErr.Count, "quality_sample", qualityErr.Sample)
+	}
+	a.logger.Warn("audio chunk failed subtitle quality check", attrs...)
+}
+
+func retryContext(base string, err error) string {
+	parts := []string{}
+	if strings.TrimSpace(base) != "" {
+		parts = append(parts, base)
+	}
+	parts = append(parts, "Retry note: the previous transcription for this audio chunk failed quality validation. Transcribe only audible spoken dialogue. Do not include release names, codec names, URLs, watermarks, disclaimers, or guessed metadata.")
+	if qualityErr, ok := subtitle.AsQualityError(err); ok && qualityErr.Sample != "" {
+		parts = append(parts, "Rejected sample: "+qualityErr.Sample)
+	}
+	return strings.Join(parts, "\n")
 }
 
 func (a *App) extractEmbeddedSubtitles(ctx context.Context, videoPath string, languages []string, fileState state.FileState) (map[string]string, error) {

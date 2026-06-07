@@ -42,6 +42,8 @@ var (
 	assPositionRE = regexp.MustCompile(`\{\\an\d+\}`)
 )
 
+const audioChunkBitrateKbps = 64
+
 func (i Inspector) CheckTools(ctx context.Context) error {
 	if err := i.checkTool(ctx, i.ffprobe(), "-version"); err != nil {
 		return err
@@ -163,7 +165,7 @@ func SelectAudioStreamByPreference(streams []AudioStream, requestedLanguages []s
 	return streams[0], nil
 }
 
-func (i Inspector) ExtractAudioChunks(ctx context.Context, videoPath string, stream AudioStream, tempRoot string, chunkSeconds int) ([]Chunk, func(), error) {
+func (i Inspector) ExtractAudioChunks(ctx context.Context, videoPath string, stream AudioStream, tempRoot string, chunkSeconds int, maxChunkBytes int64) ([]Chunk, func(), error) {
 	workDir, err := os.MkdirTemp(tempRoot, "subtitler-*")
 	if err != nil {
 		return nil, nil, err
@@ -174,6 +176,7 @@ func (i Inspector) ExtractAudioChunks(ctx context.Context, videoPath string, str
 		}
 	}
 
+	chunkSeconds = audioChunkSeconds(chunkSeconds, maxChunkBytes)
 	outputPattern := filepath.Join(workDir, "chunk_%05d.mp3")
 	args := []string{
 		"-hide_banner", "-loglevel", "error", "-y",
@@ -183,7 +186,7 @@ func (i Inspector) ExtractAudioChunks(ctx context.Context, videoPath string, str
 		"-ac", "1",
 		"-ar", "16000",
 		"-codec:a", "libmp3lame",
-		"-b:a", "64k",
+		"-b:a", fmt.Sprintf("%dk", audioChunkBitrateKbps),
 		"-f", "segment",
 		"-segment_time", fmt.Sprint(chunkSeconds),
 		"-reset_timestamps", "1",
@@ -212,6 +215,20 @@ func (i Inspector) ExtractAudioChunks(ctx context.Context, videoPath string, str
 		})
 	}
 	return chunks, cleanup, nil
+}
+
+func audioChunkSeconds(maxChunkSeconds int, maxChunkBytes int64) int {
+	if maxChunkSeconds <= 0 {
+		maxChunkSeconds = 1200
+	}
+	if maxChunkBytes <= 0 {
+		return maxChunkSeconds
+	}
+	secondsBySize := int((maxChunkBytes * 8) / (audioChunkBitrateKbps * 1000))
+	if secondsBySize <= 0 {
+		return maxChunkSeconds
+	}
+	return min(maxChunkSeconds, secondsBySize)
 }
 
 func (i Inspector) ExtractSubtitle(ctx context.Context, videoPath string, stream SubtitleStream, outputPath string) error {

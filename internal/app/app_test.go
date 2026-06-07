@@ -256,6 +256,45 @@ func TestProcessItemStopsTranscribingAfterEarlyQualityFailure(t *testing.T) {
 	}
 }
 
+func TestProcessItemRetriesBadChunkAndKeepsGoodRetry(t *testing.T) {
+	videoPath := writeVideo(t)
+	store := newStore(t)
+	app := testApp(config.Config{
+		DryRun:  false,
+		TempDir: t.TempDir(),
+		OpenAI: config.OpenAIConfig{
+			APIKey:             "test",
+			TranscriptionModel: "whisper-1",
+			MaxChunkSeconds:    1200,
+			ChunkRetries:       1,
+		},
+		Subtitles: config.SubtitleConfig{RequiredLanguages: []string{"en"}, Strategy: "missing_only", Output: config.OutputConfig{Title: "subtitler"}},
+	})
+	app.inspector = fakeInspector{chunks: []media.Chunk{{Path: "chunk-1.mp3", OffsetMS: 0, ChunkNumber: 1}}}
+	app.openai = &fakeSpeech{transcriptionOutputs: []string{
+		"1\n00:00:01,000 --> 00:00:02,000\nThe.Movie.2026.2160p.WEB-DL.HEVC\n\n",
+		"1\n00:00:01,000 --> 00:00:02,000\nHello.\n\n",
+	}}
+
+	didWork, err := app.processItem(context.Background(), store, itemFor(videoPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !didWork {
+		t.Fatal("expected generation work")
+	}
+	if app.openai.(*fakeSpeech).transcriptions != 2 {
+		t.Fatalf("expected one chunk retry, got %d transcription calls", app.openai.(*fakeSpeech).transcriptions)
+	}
+	data, err := os.ReadFile(filepath.Join(filepath.Dir(videoPath), "Episode.subtitler.en.srt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "Hello.") {
+		t.Fatalf("expected clean retry output, got:\n%s", string(data))
+	}
+}
+
 func TestProcessItemDryRunDoesNotWriteSubtitle(t *testing.T) {
 	videoPath := writeVideo(t)
 	store := newStore(t)
@@ -534,7 +573,7 @@ func (f fakeInspector) SubtitleStreams(context.Context, string) ([]media.Subtitl
 	return f.subtitles, nil
 }
 
-func (f fakeInspector) ExtractAudioChunks(context.Context, string, media.AudioStream, string, int) ([]media.Chunk, func(), error) {
+func (f fakeInspector) ExtractAudioChunks(context.Context, string, media.AudioStream, string, int, int64) ([]media.Chunk, func(), error) {
 	if len(f.chunks) > 0 {
 		return f.chunks, func() {}, nil
 	}

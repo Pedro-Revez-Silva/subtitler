@@ -204,13 +204,22 @@ touch "$dir/chunk_00000.mp3" "$dir/chunk_00001.mp3"
 		t.Fatal(err)
 	}
 	inspector := Inspector{FFmpegPath: ffmpeg}
-	chunks, cleanup, err := inspector.ExtractAudioChunks(context.Background(), "video.mkv", AudioStream{Index: 2}, t.TempDir(), 20)
+	chunks, cleanup, err := inspector.ExtractAudioChunks(context.Background(), "video.mkv", AudioStream{Index: 2}, t.TempDir(), 20, 24_000_000)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer cleanup()
 	if len(chunks) != 2 || chunks[1].OffsetMS != 20_000 || chunks[1].ChunkNumber != 2 {
 		t.Fatalf("unexpected chunks %#v", chunks)
+	}
+}
+
+func TestAudioChunkSecondsRespectsByteLimit(t *testing.T) {
+	if got := audioChunkSeconds(3600, 24_000_000); got != 3000 {
+		t.Fatalf("expected 24 MB at 64 kbps to allow 3000 seconds, got %d", got)
+	}
+	if got := audioChunkSeconds(1200, 24_000_000); got != 1200 {
+		t.Fatalf("expected max_chunk_seconds to remain limiter, got %d", got)
 	}
 }
 

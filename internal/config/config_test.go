@@ -65,6 +65,9 @@ subtitles:
 	if cfg.OpenAI.BaseURL != "https://api.openai.com/v1" || cfg.OpenAI.TranscriptionModel != "whisper-1" {
 		t.Fatalf("expected OpenAI defaults, got %#v", cfg.OpenAI)
 	}
+	if cfg.OpenAI.MaxChunkSeconds != 1200 || cfg.OpenAI.MaxChunkBytes != 24_000_000 || cfg.OpenAI.ChunkRetries != 2 {
+		t.Fatalf("expected OpenAI chunk defaults, got %#v", cfg.OpenAI)
+	}
 	if cfg.Subtitles.RequiredLanguages[0] != "en" || cfg.Subtitles.Output.Title != "subtitler" {
 		t.Fatalf("expected subtitle defaults, got %#v", cfg.Subtitles)
 	}

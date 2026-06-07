@@ -34,6 +34,8 @@ type OpenAIConfig struct {
 	BaseURL            string `yaml:"base_url"`
 	Context            string `yaml:"context"`
 	MaxChunkSeconds    int    `yaml:"max_chunk_seconds"`
+	MaxChunkBytes      int64  `yaml:"max_chunk_bytes"`
+	ChunkRetries       int    `yaml:"chunk_retries"`
 }
 
 type TelemetryConfig struct {
@@ -141,6 +143,15 @@ func (c *Config) applyDefaults() {
 	}
 	if c.OpenAI.MaxChunkSeconds <= 0 {
 		c.OpenAI.MaxChunkSeconds = 1200
+	}
+	if c.OpenAI.MaxChunkBytes <= 0 {
+		c.OpenAI.MaxChunkBytes = 24_000_000
+	}
+	if c.OpenAI.ChunkRetries < 0 {
+		c.OpenAI.ChunkRetries = 0
+	}
+	if c.OpenAI.ChunkRetries == 0 {
+		c.OpenAI.ChunkRetries = 2
 	}
 	c.applyTelemetryDefaults()
 	if c.Telemetry.Environment == "" {
