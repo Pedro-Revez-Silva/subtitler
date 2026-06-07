@@ -230,7 +230,12 @@ func (a *App) processItem(ctx context.Context, store *state.Store, item arr.Medi
 		return false, err
 	}
 
-	toGenerate := a.languagesToGenerate(item.Path, fileState, mediaUnchanged)
+	embeddedStreams, err := a.inspector.SubtitleStreams(ctx, item.Path)
+	if err != nil {
+		a.logger.Warn("could not inspect embedded subtitles", "path", item.Path, "error", err)
+	}
+
+	toGenerate := a.languagesToGenerate(item.Path, fileState, mediaUnchanged, embeddedStreams)
 	didWork := len(toGenerate) > 0
 	if len(toGenerate) > 0 && a.cfg.Subtitles.Embedded.Action == "extract" {
 		extracted, err := a.extractEmbeddedSubtitles(ctx, item.Path, toGenerate, fileState)
@@ -436,7 +441,7 @@ func (a *App) cleanupSidecars(videoPath string, sidecars []subtitle.Sidecar, gen
 	return nil
 }
 
-func (a *App) languagesToGenerate(videoPath string, fileState state.FileState, mediaUnchanged bool) []string {
+func (a *App) languagesToGenerate(videoPath string, fileState state.FileState, mediaUnchanged bool, embeddedStreams []media.SubtitleStream) []string {
 	if a.cfg.Subtitles.Strategy == "force" {
 		return slices.Clone(a.cfg.Subtitles.RequiredLanguages)
 	}
@@ -457,8 +462,19 @@ func (a *App) languagesToGenerate(videoPath string, fileState state.FileState, m
 	}
 	present := []string{}
 	for _, sidecar := range sidecars {
+		if subtitle.IsProtected(sidecar, a.cfg.Subtitles.ProtectedSuffixes) {
+			continue
+		}
 		if sidecar.Language != "" {
 			present = append(present, sidecar.Language)
+		}
+	}
+	if a.cfg.Subtitles.Embedded.Action != "extract" {
+		for _, stream := range embeddedStreams {
+			if stream.Language == "" || isProtectedEmbeddedSubtitle(stream, a.cfg.Subtitles.ProtectedSuffixes) {
+				continue
+			}
+			present = append(present, stream.Language)
 		}
 	}
 	var missing []string
@@ -468,6 +484,19 @@ func (a *App) languagesToGenerate(videoPath string, fileState state.FileState, m
 		}
 	}
 	return missing
+}
+
+func isProtectedEmbeddedSubtitle(stream media.SubtitleStream, protectedSuffixes []string) bool {
+	if stream.Forced {
+		return true
+	}
+	title := strings.ToLower(stream.Title)
+	for _, suffix := range protectedSuffixes {
+		if strings.Contains(title, strings.ToLower(strings.TrimSpace(suffix))) {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *App) contextFor(item arr.MediaItem) string {

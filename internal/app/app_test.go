@@ -37,9 +37,47 @@ func TestMissingOnlyTreatsJellyfinPortugueseSidecarAsPresent(t *testing.T) {
 		},
 	}, slog.Default(), nil, "test")
 
-	missing := app.languagesToGenerate(videoPath, state.FileState{}, true)
+	missing := app.languagesToGenerate(videoPath, state.FileState{}, true, nil)
 	if len(missing) != 0 {
 		t.Fatalf("expected pt sidecar to satisfy pt-PT, got missing languages %#v", missing)
+	}
+}
+
+func TestMissingOnlyTreatsEmbeddedSubtitleAsPresentWhenIgnoringEmbedded(t *testing.T) {
+	videoPath := writeVideo(t)
+	app := New(config.Config{
+		Subtitles: config.SubtitleConfig{
+			RequiredLanguages: []string{"en", "pt-PT"},
+			Strategy:          "missing_only",
+			Embedded:          config.EmbeddedConfig{Action: "ignore"},
+		},
+	}, slog.Default(), nil, "test")
+
+	missing := app.languagesToGenerate(videoPath, state.FileState{}, true, []media.SubtitleStream{
+		{Index: 2, Language: "en", Title: "English"},
+		{Index: 3, Language: "pt", Title: "Portuguese"},
+	})
+	if len(missing) != 0 {
+		t.Fatalf("expected embedded subtitles to satisfy required languages, got %#v", missing)
+	}
+}
+
+func TestMissingOnlyDoesNotTreatForcedEmbeddedSubtitleAsPresent(t *testing.T) {
+	videoPath := writeVideo(t)
+	app := New(config.Config{
+		Subtitles: config.SubtitleConfig{
+			RequiredLanguages: []string{"en"},
+			Strategy:          "missing_only",
+			Embedded:          config.EmbeddedConfig{Action: "ignore"},
+			ProtectedSuffixes: []string{"forced"},
+		},
+	}, slog.Default(), nil, "test")
+
+	missing := app.languagesToGenerate(videoPath, state.FileState{}, true, []media.SubtitleStream{
+		{Index: 2, Language: "en", Title: "English Forced", Forced: true},
+	})
+	if len(missing) != 1 || missing[0] != "en" {
+		t.Fatalf("expected forced-only embedded subtitle to be missing, got %#v", missing)
 	}
 }
 
@@ -212,6 +250,7 @@ func TestProcessItemExtractsEmbeddedBeforeTranscribing(t *testing.T) {
 		DryRun:    false,
 		Subtitles: config.SubtitleConfig{RequiredLanguages: []string{"pt-PT"}, Strategy: "missing_only", Embedded: config.EmbeddedConfig{Action: "extract", Title: "official"}},
 	})
+	app.inspector = fakeInspector{subtitles: []media.SubtitleStream{{Index: 1, Language: "pt", Codec: "subrip"}}}
 
 	didWork, err := app.processItem(context.Background(), store, itemFor(videoPath))
 	if err != nil {
@@ -440,7 +479,8 @@ func TestAppLanguageHelpers(t *testing.T) {
 }
 
 type fakeInspector struct {
-	audio []media.AudioStream
+	audio     []media.AudioStream
+	subtitles []media.SubtitleStream
 }
 
 func (fakeInspector) CheckTools(context.Context) error { return nil }
@@ -456,8 +496,8 @@ func (f fakeInspector) AudioStreams(context.Context, string) ([]media.AudioStrea
 	return []media.AudioStream{{Index: 0, Language: "en", Default: true}}, nil
 }
 
-func (fakeInspector) SubtitleStreams(context.Context, string) ([]media.SubtitleStream, error) {
-	return []media.SubtitleStream{{Index: 1, Language: "pt", Codec: "subrip"}}, nil
+func (f fakeInspector) SubtitleStreams(context.Context, string) ([]media.SubtitleStream, error) {
+	return f.subtitles, nil
 }
 
 func (fakeInspector) ExtractAudioChunks(context.Context, string, media.AudioStream, string, int) ([]media.Chunk, func(), error) {

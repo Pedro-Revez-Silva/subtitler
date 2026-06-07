@@ -28,6 +28,7 @@ type SubtitleStream struct {
 	Language string
 	Title    string
 	Codec    string
+	Forced   bool
 }
 
 type Inspector struct {
@@ -123,6 +124,7 @@ func (i Inspector) SubtitleStreams(ctx context.Context, videoPath string) ([]Sub
 			Language: normalizeLanguage(stream.Tags.Language),
 			Title:    stream.Tags.Title,
 			Codec:    stream.CodecName,
+			Forced:   stream.Disposition.Forced == 1,
 		})
 	}
 	return streams, nil
@@ -271,6 +273,7 @@ type ffprobeStreams struct {
 		CodecType   string `json:"codec_type"`
 		Disposition struct {
 			Default int `json:"default"`
+			Forced  int `json:"forced"`
 		} `json:"disposition"`
 		Tags struct {
 			Language string `json:"language"`
