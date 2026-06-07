@@ -333,6 +333,15 @@ bin/quality coverage      # coverage only
 bin/quality coverage-all  # whole-repo coverage report (informational)
 ```
 
+Install the repo Git hooks once per checkout to enforce the full push gate before `git push`:
+
+```bash
+bin/install-git-hooks
+```
+
+The pre-push hook runs `bin/quality push`, so format, tests, coverage, vet, Docker build, and
+`govulncheck` must pass before Git sends changes to the remote.
+
 CI runs on pull requests and pushes to `main`/`dev`: the local quality gate, `go vet`, a binary
 build, a Docker build check, and an advisory `govulncheck` scan. The enforced coverage gate is 95%
 for the deterministic core packages `internal/config` and `internal/subtitle`.
