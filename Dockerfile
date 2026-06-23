@@ -7,7 +7,7 @@ COPY . .
 ARG APP_VERSION=dev
 RUN CGO_ENABLED=0 go build -ldflags="-X main.version=${APP_VERSION}" -o /out/subtitler ./cmd/subtitler
 
-FROM alpine:3.23
+FROM alpine:3.24
 
 RUN apk add --no-cache ffmpeg ca-certificates
 COPY --from=build /out/subtitler /usr/local/bin/subtitler
