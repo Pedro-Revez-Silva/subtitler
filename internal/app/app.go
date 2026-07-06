@@ -361,10 +361,9 @@ func (a *App) transcribeChunk(ctx context.Context, item arr.MediaItem, chunk med
 	var lastErr error
 	attempts := a.cfg.OpenAI.ChunkRetries + 1
 	for attempt := 1; attempt <= attempts; attempt++ {
-		prompt := a.contextFor(item)
-		if attempt > 1 {
-			prompt = retryContext(prompt, lastErr)
-		}
+		// The Whisper prompt is prior transcript context, not an instruction
+		// channel. Leaving it empty avoids prompt/retry text leaking into cues.
+		prompt := ""
 		a.logger.Info("transcribing audio chunk", "path", item.Path, "chunk", chunk.ChunkNumber, "offset_ms", chunk.OffsetMS, "attempt", attempt, "max_attempts", attempts)
 		srt, err := a.openai.TranscribeSRT(ctx, chunk.Path, a.cfg.OpenAI.TranscriptionModel, prompt, openAILanguage(transcriptionLanguage))
 		if err != nil {
@@ -399,18 +398,6 @@ func (a *App) logChunkQualityFailure(path string, chunk media.Chunk, attempt, ma
 		attrs = append(attrs, "quality_reason", qualityErr.Reason, "quality_count", qualityErr.Count, "quality_sample", qualityErr.Sample)
 	}
 	a.logger.Warn("audio chunk failed subtitle quality check", attrs...)
-}
-
-func retryContext(base string, err error) string {
-	parts := []string{}
-	if strings.TrimSpace(base) != "" {
-		parts = append(parts, base)
-	}
-	parts = append(parts, "Retry note: the previous transcription for this audio chunk failed quality validation. Transcribe only audible spoken dialogue. Do not include release names, codec names, URLs, watermarks, disclaimers, or guessed metadata.")
-	if qualityErr, ok := subtitle.AsQualityError(err); ok && qualityErr.Sample != "" {
-		parts = append(parts, "Rejected sample: "+qualityErr.Sample)
-	}
-	return strings.Join(parts, "\n")
 }
 
 func (a *App) extractEmbeddedSubtitles(ctx context.Context, videoPath string, languages []string, fileState state.FileState) (map[string]string, error) {

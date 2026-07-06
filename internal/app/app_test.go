@@ -286,6 +286,9 @@ func TestProcessItemRetriesBadChunkAndKeepsGoodRetry(t *testing.T) {
 	if app.openai.(*fakeSpeech).transcriptions != 2 {
 		t.Fatalf("expected one chunk retry, got %d transcription calls", app.openai.(*fakeSpeech).transcriptions)
 	}
+	if prompts := app.openai.(*fakeSpeech).transcriptionPrompts; len(prompts) != 2 || prompts[0] != "" || prompts[1] != "" {
+		t.Fatalf("expected retries to avoid Whisper prompt context, got %#v", prompts)
+	}
 	data, err := os.ReadFile(filepath.Join(filepath.Dir(videoPath), "Episode.subtitler.en.srt"))
 	if err != nil {
 		t.Fatal(err)
@@ -593,12 +596,14 @@ type fakeSpeech struct {
 	transcriptions         int
 	translations           int
 	transcriptionLanguages []string
+	transcriptionPrompts   []string
 	transcriptionOutputs   []string
 }
 
-func (f *fakeSpeech) TranscribeSRT(_ context.Context, _ string, _ string, _ string, language string) (string, error) {
+func (f *fakeSpeech) TranscribeSRT(_ context.Context, _ string, _ string, prompt string, language string) (string, error) {
 	f.transcriptions++
 	f.transcriptionLanguages = append(f.transcriptionLanguages, language)
+	f.transcriptionPrompts = append(f.transcriptionPrompts, prompt)
 	if len(f.transcriptionOutputs) >= f.transcriptions {
 		return f.transcriptionOutputs[f.transcriptions-1], nil
 	}
