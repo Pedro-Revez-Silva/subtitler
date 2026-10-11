@@ -78,6 +78,8 @@ removed only once both canonical sidecars exist. Known unwanted languages can
 be removed earlier; desired forced tracks are retained. Audio keeps English,
 PT-PT and the original language from ARR. Unknown audio metadata and ambiguous
 Portuguese audio remain for review, rather than risking the sole original/dub.
+An unwanted dub is also retained and flagged if removing it would leave no
+dialogue audio (or only commentary); replacing that media release belongs to ARR.
 Ambiguous subtitle tracks are quarantined only after both canonical replacements
 exist; until then they remain available for review.
 Other containers remain for review. A verified backup hardlink is made outside

@@ -225,6 +225,17 @@ class OwnershipTests(unittest.TestCase):
         transcribe.assert_called_once()
         self.assertEqual(result["output"], "local.srt")
 
+    def test_portugal_audio_can_supply_free_english_translation(self):
+        self.manager.cfg.update(local_transcription=True, paid_fallback=True, paid_daily_usd=1)
+        audio = {"codec_type": "audio", "index": 1, "tags": {"language": "por", "title": "European"}}
+        detail = {"en": {"providers": {"opensubtitlescom": "searched"}}, "pt-PT": {"output": "source.srt"}}
+        with patch("paid.Paid", side_effect=AssertionError("paid called")), \
+             patch.object(self.manager, "transcribe", return_value=(self.root / "generated.srt", {"source": "local_transcription"})) as transcribe, \
+             patch.object(self.manager, "publish", return_value={"output": "local.srt"}):
+            self.manager.fallback(self.item, self.fp, [audio], 120, "en", detail, self.root)
+        self.assertTrue(transcribe.call_args.kwargs["translate"])
+        self.assertEqual(transcribe.call_args.kwargs["source_language"], "pt-PT")
+
     def test_reporting_source_invalidates_its_translation(self):
         self.register()
         source = self.caption()
@@ -306,6 +317,20 @@ class OwnershipTests(unittest.TestCase):
             backup.write_bytes(b"different file")
             with self.assertRaisesRegex(Review, "backup_collision"):
                 self.manager.backup_link(str(self.video), self.fp, destination)
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg required")
+    def test_wrong_language_release_keeps_its_only_dialogue_audio(self):
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=32x32:d=2",
+                        "-f", "lavfi", "-i", "anullsrc=r=16000:cl=mono", "-t", "2", "-map", "0:v", "-map", "1:a", "-map", "1:a",
+                        "-c:v", "ffv1", "-c:a", "pcm_s16le", "-metadata:s:a:0", "language=eng", "-metadata:s:a:0", "title=Commentary",
+                        "-metadata:s:a:1", "language=tur", str(self.video)], check=True)
+        fp, original_sha = fingerprint(self.video), digest(self.video)
+        self.manager.cfg.update(prune_audio=True)
+        streams, duration = self.manager.probe(str(self.video))
+        new_fp, status = self.manager.prune(self.item, fp, streams, duration, False)
+        self.assertEqual(new_fp, fp)
+        self.assertEqual(digest(self.video), original_sha)
+        self.assertEqual(status["audio_review"], "only_nonpreferred_dialogue_audio_available")
 
     @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg required")
     def test_remux_preserves_original_and_seed_inodes(self):

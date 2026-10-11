@@ -39,6 +39,13 @@ TEXT_CODECS = {"subrip", "srt", "ass", "ssa", "webvtt", "mov_text", "text"}
 REASONS = {"out_of_sync", "wrong_text", "wrong_language", "missing"}
 
 
+def non_dialogue_audio(stream):
+    flags = stream.get("disposition", {})
+    return (flags.get("comment") or flags.get("descriptions") or flags.get("visual_impaired")
+            or re.search(r"commentary|description|descriptive|isolated.?score|instrumental|music.?and.?effects|\bm\s*&\s*e\b",
+                         stream.get("tags", {}).get("title", ""), re.I))
+
+
 class Review(Exception):
     """A stable, non-secret reason that can be recorded in the catalogue."""
 
@@ -272,7 +279,7 @@ class Manager:
 
     def audio(self, streams, lang, original):
         audios = [s for s in streams if s["codec_type"] == "audio"
-                  and not re.search(r"commentary|description|descriptive", s.get("tags", {}).get("title", ""), re.I)]
+                  and not non_dialogue_audio(s)]
         for wanted in [lang, original, "en"]:
             for stream in audios:
                 tags = stream.get("tags", {})
@@ -620,7 +627,7 @@ class Manager:
         reference = work / f"audio-{audio['index']}.wav"
         tags = audio.get("tags", {})
         audio_lang = language(tags.get("language"), tags.get("title"))
-        translate_audio = lang == "en" and audio_lang not in {"en", "pt-PT"} and bool(audio_lang)
+        translate_audio = lang == "en" and audio_lang != "en" and bool(audio_lang)
         # Free transcription of the actual dialogue precedes any paid operation
         # when it can supply the requested language. Cross-language PT-PT text
         # can instead inherit a verified source's clock after provider searches.
@@ -760,8 +767,16 @@ class Manager:
                 duplicate = complete and permitted and not stream.get("disposition", {}).get("forced")
                 if unwanted or duplicate:
                     remove.append(stream["index"])
+        dialogue = {s["index"] for s in streams if s["codec_type"] == "audio"
+                    and not non_dialogue_audio(s)}
+        audio_review = None
+        if dialogue and dialogue <= set(remove):
+            # A wrong-language release must remain playable until ARR can
+            # replace it. Never leave only commentary, or remove its sole voice.
+            remove = [index for index in remove if index not in dialogue]
+            audio_review = "only_nonpreferred_dialogue_audio_available"
         if not remove:
-            return fp, {"status": "no_change", "original_language_known": bool(original)}
+            return fp, {"status": "no_change", "original_language_known": bool(original), "audio_review": audio_review}
         if Path(path).suffix.lower() != ".mkv":
             return fp, {"status": "review_non_mkv", "remove_streams": remove}
         physical = backing_path(path)
@@ -800,7 +815,7 @@ class Manager:
             self.catalogue.db.execute("UPDATE captions SET fingerprint=? WHERE path=? AND fingerprint=?", (new_fp, path, fp))
             self.catalogue.db.execute("UPDATE rejected SET fingerprint=? WHERE path=? AND fingerprint=?", (new_fp, path, fp))
             self.catalogue.db.commit()
-            return new_fp, {"status": "remuxed", "removed_streams": remove, "backup": str(backup)}
+            return new_fp, {"status": "remuxed", "removed_streams": remove, "backup": str(backup), "audio_review": audio_review}
         finally:
             if staged.exists():
                 staged.unlink()
@@ -891,7 +906,7 @@ class Manager:
                     self.cleanup_sidecars(path, fp, complete)
                     new_fp, pruning = self.prune(item, fp, streams, duration, complete)
                     detail["track_policy"] = pruning
-                    status = "managed" if complete else "needs_attention"
+                    status = "managed" if complete and not pruning.get("audio_review") else "needs_attention"
             except Review as error:
                 detail["error"] = str(error)
             except Exception:
