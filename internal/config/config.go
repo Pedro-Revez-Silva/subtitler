@@ -20,6 +20,25 @@ type Config struct {
 	Subtitles  SubtitleConfig   `yaml:"subtitles"`
 	Processing ProcessingConfig `yaml:"processing"`
 	Tools      ToolsConfig      `yaml:"tools"`
+	Management ManagementConfig `yaml:"management"`
+}
+
+// Management selects the persistent, provider-first subtitle owner. Paid API
+// clients are available only behind an explicit, budgeted fallback setting.
+type ManagementConfig struct {
+	Enabled            bool    `yaml:"enabled" json:"enabled"`
+	Python             string  `yaml:"python" json:"python"`
+	Script             string  `yaml:"script" json:"script"`
+	StateDir           string  `yaml:"state_dir" json:"state_dir"`
+	ProvidersFile      string  `yaml:"providers_file" json:"providers_file"`
+	QuarantineDir      string  `yaml:"quarantine_dir" json:"quarantine_dir"`
+	PruneEmbedded      bool    `yaml:"prune_embedded" json:"prune_embedded"`
+	PruneAudio         bool    `yaml:"prune_audio" json:"prune_audio"`
+	LocalTranscription bool    `yaml:"local_transcription" json:"local_transcription"`
+	VerifyWords        bool    `yaml:"verify_words" json:"verify_words"`
+	MinFreeGB          int     `yaml:"min_free_gb" json:"min_free_gb"`
+	PaidFallback       bool    `yaml:"paid_fallback" json:"paid_fallback"`
+	PaidDailyUSD       float64 `yaml:"paid_daily_usd" json:"paid_daily_usd"`
 }
 
 type ServiceConfig struct {
@@ -281,6 +300,15 @@ func (c Config) validate() error {
 	}
 	if c.Processing.MaxJobsPerScan < 0 {
 		return errors.New("processing.max_jobs_per_scan cannot be negative")
+	}
+	if c.Management.Enabled && (c.Management.StateDir == "" || c.Management.QuarantineDir == "") {
+		return errors.New("management.state_dir and management.quarantine_dir are required when enabled")
+	}
+	if c.Management.MinFreeGB < 0 {
+		return errors.New("management.min_free_gb cannot be negative")
+	}
+	if c.Management.PaidFallback && c.Management.PaidDailyUSD <= 0 {
+		return errors.New("management.paid_daily_usd must be positive when paid fallback is enabled")
 	}
 	return nil
 }

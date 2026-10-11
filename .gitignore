@@ -16,3 +16,6 @@ tmp/
 *.key
 id_rsa*
 id_ed25519*
+# Local subtitle engine bytecode
+__pycache__/
+*.pyc

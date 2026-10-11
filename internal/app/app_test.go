@@ -176,7 +176,7 @@ func TestProcessItemTranslatesTargetLanguage(t *testing.T) {
 	if !didWork {
 		t.Fatal("expected generation work")
 	}
-	outputPath := filepath.Join(filepath.Dir(videoPath), "Episode.subtitler.pt.srt")
+	outputPath := filepath.Join(filepath.Dir(videoPath), "Episode.subtitler.pt-PT.pt.srt")
 	data, err := os.ReadFile(outputPath)
 	if err != nil {
 		t.Fatal(err)
@@ -331,7 +331,7 @@ func TestProcessItemExtractsEmbeddedBeforeTranscribing(t *testing.T) {
 	if !didWork {
 		t.Fatal("expected extraction work")
 	}
-	outputPath := filepath.Join(filepath.Dir(videoPath), "Episode.official.pt.srt")
+	outputPath := filepath.Join(filepath.Dir(videoPath), "Episode.official.pt-PT.pt.srt")
 	data, err := os.ReadFile(outputPath)
 	if err != nil {
 		t.Fatal(err)

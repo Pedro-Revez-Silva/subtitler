@@ -306,7 +306,7 @@ hostnames. Sentry error/panic capture is off by default because arbitrary errors
 
 ## 🛠️ Local development
 
-You need Go 1.25.11 or newer plus `ffmpeg`/`ffprobe` on the host for local non-Docker runs.
+You need Go 1.26.9 or newer plus `ffmpeg`/`ffprobe` on the host for local non-Docker runs. Persistent subtitle ownership also requires the dependencies and setup in [manager/README.md](manager/README.md).
 
 ```bash
 export OPENAI_API_KEY=...

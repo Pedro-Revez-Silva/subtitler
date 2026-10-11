@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-export GOTOOLCHAIN="${GOTOOLCHAIN:-go1.25.11}"
+export GOTOOLCHAIN="${GOTOOLCHAIN:-go1.26.9}"
 
 COVERAGE_MIN="${COVERAGE_MIN:-95}"
 COVERAGE_PACKAGES="${COVERAGE_PACKAGES:-./internal/config,./internal/subtitle}"
@@ -43,6 +43,10 @@ check_format() {
     echo "$files" >&2
     return 1
   fi
+}
+
+ownership_tests() {
+  "${SUBTITLER_PYTHON:-python3}" -m unittest discover -s manager -v
 }
 
 coverage() {
@@ -85,9 +89,10 @@ case "${1:-}" in
     run "Tests" go test ./...
     run "Vet" go vet ./...
     run "Coverage" coverage
+    run "Subtitle ownership tests" ownership_tests
     run "Docker build" docker build --build-arg APP_VERSION=ci -t subtitler:quality-check .
     docker rmi subtitler:quality-check >/dev/null
-    run "Vulnerability check" go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+    run "Vulnerability check" env GOTOOLCHAIN=auto go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
     ;;
   coverage)
     coverage

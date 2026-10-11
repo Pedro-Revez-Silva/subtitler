@@ -14,6 +14,7 @@ import (
 	"github.com/Pedro-Revez-Silva/subtitler/internal/config"
 	"github.com/Pedro-Revez-Silva/subtitler/internal/media"
 	"github.com/Pedro-Revez-Silva/subtitler/internal/openai"
+	"github.com/Pedro-Revez-Silva/subtitler/internal/ownership"
 	"github.com/Pedro-Revez-Silva/subtitler/internal/state"
 	"github.com/Pedro-Revez-Silva/subtitler/internal/subtitle"
 	"github.com/Pedro-Revez-Silva/subtitler/internal/telemetry"
@@ -60,6 +61,16 @@ func New(cfg config.Config, logger *slog.Logger, telemetryClient *telemetry.Clie
 }
 
 func (a *App) ScanAndProcess(ctx context.Context) error {
+	if a.cfg.Management.Enabled {
+		items, err := a.mediaItems(ctx)
+		if err != nil {
+			return err
+		}
+		for i := range items {
+			items[i].Path = a.cfg.MapPath(items[i].Path)
+		}
+		return ownership.Run(ctx, a.cfg, "scan", items, nil, os.Stdout)
+	}
 	if err := a.inspector.CheckTools(ctx); err != nil {
 		return err
 	}
@@ -98,6 +109,9 @@ func (a *App) ScanAndProcess(ctx context.Context) error {
 }
 
 func (a *App) GenerateOne(ctx context.Context, videoPath string) error {
+	if a.cfg.Management.Enabled {
+		return ownership.Run(ctx, a.cfg, "scan", []arr.MediaItem{{Source: "manual", Path: videoPath}}, nil, os.Stdout)
+	}
 	if err := a.inspector.CheckTools(ctx); err != nil {
 		return err
 	}

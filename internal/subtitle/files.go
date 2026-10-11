@@ -62,6 +62,9 @@ func OutputPath(videoPath, language, title string) string {
 	if title != "" {
 		parts = append(parts, title)
 	}
+	if region := normalizeLanguage(language); region == "pt-PT" || region == "pt-BR" {
+		parts = append(parts, region)
+	}
 	parts = append(parts, jellyfinLanguage(language), "srt")
 	return filepath.Join(dir, strings.Join(parts, "."))
 }

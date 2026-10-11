@@ -1,10 +1,25 @@
 dry_run: true
 state_path: /data/subtitler-state.json
-temp_dir: /tmp
+temp_dir: /data/tmp
 
 tools:
   ffmpeg: ffmpeg
   ffprobe: ffprobe
+
+# Optional persistent ownership engine. Its Docker image includes the local
+# tools; native installations also need manager/requirements.txt.
+management:
+  enabled: false
+  state_dir: /data/ownership
+  providers_file: /data/providers.json
+  quarantine_dir: /media/agent-backups/subtitler
+  verify_words: true
+  local_transcription: true
+  prune_embedded: true
+  prune_audio: true
+  min_free_gb: 50
+  paid_fallback: false
+  paid_daily_usd: 1.0
 
 sonarr:
   url: http://sonarr:8989
