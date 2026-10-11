@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import sqlite3
 import statistics
 import subprocess
@@ -453,7 +454,7 @@ class Manager:
 
     def transcribe(self, reference, lang, work, duration, source_language=None, translate=False):
         import pysubs2
-        selected = source_language or ("pt" if lang == "pt-PT" else "en")
+        selected = (source_language or ("pt" if lang == "pt-PT" else "en")).split("-")[0]
         segments, info = self.speech_model().transcribe(str(reference), language=selected or None,
                                                       task="translate" if translate else "transcribe",
                                                       vad_filter=True, word_timestamps=False, beam_size=5)
@@ -895,6 +896,7 @@ class Manager:
                            (new_fp, time.time(), time.time() + delay, status, json.dumps(detail), path))
                 db.commit()
             self.emit(path=path, status=status, detail=detail)
+            self.process_rescans()
         self.emit(status="scan_finished", jobs=jobs, inventory=len(paths))
         if not self.request.get("dry_run"):
             self.process_rescans()
@@ -914,6 +916,11 @@ class Manager:
 
 def main():
     os.umask(0o077)
+    # Unwind temporary-file and remux cleanup when the Go daemon cancels this
+    # process group. A stopped job remains queued instead of becoming a failure.
+    def terminate(signum, frame):
+        raise SystemExit(0)
+    signal.signal(signal.SIGTERM, terminate)
     request = json.load(sys.stdin)
     manager = Manager(request)
     action = request["action"]

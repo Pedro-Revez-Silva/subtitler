@@ -7,7 +7,9 @@ from pathlib import Path
 import shutil
 import sqlite3
 import subprocess
+import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -161,6 +163,15 @@ class OwnershipTests(unittest.TestCase):
                 result = self.manager.fallback(self.item, self.fp, [], 120, "en", {"en": current}, self.root)
             self.assertEqual(result["generation_deferred"], reason)
 
+    def test_local_translation_normalizes_regional_audio_codes(self):
+        segments = [SimpleNamespace(start=c.start / 1000, end=c.end / 1000, text=c.plaintext,
+                                    no_speech_prob=.1, avg_logprob=-.1) for c in dialogue()]
+        with patch.object(self.manager, "speech_model") as model:
+            model.return_value.transcribe.return_value = (segments, None)
+            self.manager.transcribe(self.root / "audio.wav", "en", self.root, 120, source_language="pt-BR", translate=True)
+        self.assertEqual(model.return_value.transcribe.call_args.kwargs["language"], "pt")
+        self.assertEqual(model.return_value.transcribe.call_args.kwargs["task"], "translate")
+
     def test_wrong_language_label_is_rejected_before_alignment(self):
         candidate = self.root / "mislabeled.srt"
         dialogue().save(str(candidate), format_="srt")
@@ -292,6 +303,44 @@ class OwnershipTests(unittest.TestCase):
 
 
 class BudgetAndProviderTests(unittest.TestCase):
+    def test_shutdown_unwinds_temporary_work(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            marker = root / "working-directory"
+            request = {"action": "scan", "temp_dir": directory,
+                       "management": {"state_dir": str(root / "state"), "quarantine_dir": str(root / "archive")}}
+            script = """import tempfile,time,sys
+from pathlib import Path
+from manager import Manager,main
+def scan(self):
+    with tempfile.TemporaryDirectory(dir=self.request['temp_dir']) as work:
+        Path(sys.argv[1]).write_text(work)
+        print('ready',flush=True)
+        time.sleep(30)
+Manager.scan=scan
+main()
+"""
+            process = subprocess.Popen([sys.executable, "-c", script, str(marker)], stdin=subprocess.PIPE,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                       env={**os.environ, "PYTHONPATH": str(Path(__file__).parent)})
+            try:
+                process.stdin.write(json.dumps(request).encode())
+                process.stdin.flush()
+                process.stdin.close()
+                process.stdin = None
+                import select
+                self.assertTrue(select.select([process.stdout], [], [], 5)[0])
+                self.assertEqual(process.stdout.readline().strip(), b"ready")
+                work = Path(marker.read_text())
+                process.terminate()
+                process.communicate(timeout=5)
+                self.assertEqual(process.returncode, 0)
+                self.assertFalse(work.exists())
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                process.communicate()
+
     def test_translation_validates_ids_and_resumes_without_another_charge(self):
         with tempfile.TemporaryDirectory() as directory:
             db = sqlite3.connect(Path(directory) / "db")
