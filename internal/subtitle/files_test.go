@@ -43,9 +43,20 @@ func TestFindSidecarsMatchesMediaBasename(t *testing.T) {
 
 func TestOutputPathIncludesTitleAndJellyfinLanguage(t *testing.T) {
 	path := OutputPath("/media/Show/Episode.mkv", "pt-PT", "Subtitler")
-	want := "/media/Show/Episode.subtitler.pt.srt"
+	want := "/media/Show/Episode.subtitler.pt-PT.pt.srt"
 	if path != want {
 		t.Fatalf("expected %q, got %q", want, path)
+	}
+}
+
+func TestPortugueseOutputPathsCannotCollide(t *testing.T) {
+	pt := OutputPath("/media/Movie.mkv", "pt-PT", "subtitler")
+	br := OutputPath("/media/Movie.mkv", "pt-BR", "subtitler")
+	if pt == br {
+		t.Fatal("regional Portuguese files collide")
+	}
+	if got := detectLanguage([]string{"subtitler", "pt-PT", "pt"}); got != "pt-PT" {
+		t.Fatalf("lost locale: %s", got)
 	}
 }
 

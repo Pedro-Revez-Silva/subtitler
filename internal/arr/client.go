@@ -12,11 +12,16 @@ import (
 )
 
 type MediaItem struct {
-	Source  string
-	ID      int
-	Title   string
-	Path    string
-	Context string
+	Source           string
+	ID               int
+	Title            string
+	Path             string
+	Context          string
+	OriginalLanguage string
+	IMDBID           string
+	Year             int
+	FileID           int
+	SeriesID         int
 }
 
 type Client struct {
@@ -52,11 +57,15 @@ func (c *Client) RadarrMovies(ctx context.Context) ([]MediaItem, error) {
 			continue
 		}
 		items = append(items, MediaItem{
-			Source:  "radarr",
-			ID:      movie.ID,
-			Title:   movie.Title,
-			Path:    path,
-			Context: fmt.Sprintf("%s (%d)", movie.Title, movie.Year),
+			Source:           "radarr",
+			ID:               movie.ID,
+			Title:            movie.Title,
+			Path:             path,
+			Context:          fmt.Sprintf("%s (%d)", movie.Title, movie.Year),
+			OriginalLanguage: movie.OriginalLanguage.Name,
+			IMDBID:           movie.IMDBID,
+			Year:             movie.Year,
+			FileID:           movie.MovieFile.ID,
 		})
 	}
 	return items, nil
@@ -85,11 +94,14 @@ func (c *Client) SonarrEpisodes(ctx context.Context) ([]MediaItem, error) {
 				continue
 			}
 			items = append(items, MediaItem{
-				Source:  "sonarr",
-				ID:      file.ID,
-				Title:   show.Title,
-				Path:    path,
-				Context: show.Title,
+				Source:           "sonarr",
+				ID:               file.ID,
+				Title:            show.Title,
+				Path:             path,
+				Context:          show.Title,
+				OriginalLanguage: show.OriginalLanguage.Name,
+				FileID:           file.ID,
+				SeriesID:         show.ID,
 			})
 		}
 	}
@@ -128,10 +140,14 @@ func (c *Client) get(ctx context.Context, endpoint string, query url.Values, out
 }
 
 type radarrMovie struct {
-	ID        int    `json:"id"`
-	Title     string `json:"title"`
-	Year      int    `json:"year"`
-	Path      string `json:"path"`
+	ID               int    `json:"id"`
+	Title            string `json:"title"`
+	Year             int    `json:"year"`
+	Path             string `json:"path"`
+	IMDBID           string `json:"imdbId"`
+	OriginalLanguage struct {
+		Name string `json:"name"`
+	} `json:"originalLanguage"`
 	MovieFile struct {
 		ID           int    `json:"id"`
 		Path         string `json:"path"`
@@ -140,9 +156,12 @@ type radarrMovie struct {
 }
 
 type sonarrSeries struct {
-	ID    int    `json:"id"`
-	Title string `json:"title"`
-	Path  string `json:"path"`
+	ID               int    `json:"id"`
+	Title            string `json:"title"`
+	Path             string `json:"path"`
+	OriginalLanguage struct {
+		Name string `json:"name"`
+	} `json:"originalLanguage"`
 }
 
 type sonarrEpisodeFile struct {
