@@ -6,6 +6,7 @@ are deliberately lazy imports, so status/report never download models or media.
 """
 import contextlib
 import difflib
+import errno
 import fcntl
 import hashlib
 import io
@@ -59,8 +60,20 @@ def language(value, title=""):
         return ""
 
 
+def backing_path(path):
+    try:
+        physical = Path(os.getxattr(path, "user.mergerfs.fullpath").decode())
+        if physical.is_absolute() and physical.is_file():
+            return physical
+    except OSError:
+        pass
+    return Path(path)
+
+
 def fingerprint(path):
-    stat = Path(path).stat()
+    # Read the real inode on a union pool: a direct branch replacement must not
+    # look unchanged while the FUSE attribute cache still contains the old inode.
+    stat = backing_path(path).stat()
     return f"{stat.st_dev}:{stat.st_ino}:{stat.st_size}:{stat.st_mtime_ns}"
 
 
@@ -681,6 +694,42 @@ class Manager:
                     raise Review("media_changed_during_work")
                 self.archive(sidecar["path"], path)
 
+    def backup_link(self, path, fp, backup):
+        try:
+            os.link(path, backup)
+        except FileExistsError:
+            if fingerprint(backup) != fp:
+                raise Review("media_backup_collision")
+        except OSError as error:
+            if error.errno != errno.EXDEV:
+                raise
+            # MergerFS can reject a cross-directory link when the destination
+            # directory lives on another branch. Create it on the source branch
+            # without changing the pool's global create/link policy.
+            try:
+                base = Path(os.getxattr(path, "user.mergerfs.basepath").decode())
+                source = Path(os.getxattr(path, "user.mergerfs.fullpath").decode())
+                relative = Path(os.getxattr(backup.parent, "user.mergerfs.relpath").decode().lstrip("/"))
+                if not source.is_relative_to(base) or ".." in relative.parts or not base.is_dir():
+                    raise Review("media_backup_branch_unavailable")
+                target = base / relative / backup.name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    os.link(source, target)
+                except FileExistsError:
+                    pass
+                source_stat, pool_stat = source.stat(), Path(path).stat()
+                if not os.path.samefile(source, target) or (source_stat.st_size, source_stat.st_mtime_ns) != (pool_stat.st_size, pool_stat.st_mtime_ns):
+                    raise Review("media_backup_collision")
+                if fingerprint(path) != fp:
+                    raise Review("media_changed_during_backup")
+                return target
+            except OSError:
+                raise Review("media_backup_branch_unavailable") from None
+        if fingerprint(backup) != fp or fingerprint(path) != fp:
+            raise Review("media_changed_during_backup")
+        return backup
+
     def prune(self, item, fp, streams, duration, complete):
         path = item["Path"]
         if not self.cfg.get("prune_embedded") and not self.cfg.get("prune_audio"):
@@ -706,26 +755,19 @@ class Manager:
             return fp, {"status": "no_change", "original_language_known": bool(original)}
         if Path(path).suffix.lower() != ".mkv":
             return fp, {"status": "review_non_mkv", "remove_streams": remove}
-        free = shutil.disk_usage(Path(path).parent).free
+        physical = backing_path(path)
+        free = shutil.disk_usage(physical.parent).free
         required = Path(path).stat().st_size + max(10, self.cfg.get("min_free_gb", 50)) * 1024 ** 3
         if free < required:
             return fp, {"status": "insufficient_space"}
         backupdir = self.quarantine / "media" / hashlib.sha256((path + fp).encode()).hexdigest()[:20]
         backupdir.mkdir(parents=True, exist_ok=True)
         backup = backupdir / Path(path).name
-        staged = Path(path).parent / (".subtitler-" + uuid.uuid4().hex + ".part")
+        staged = physical.parent / (".subtitler-" + uuid.uuid4().hex + ".part")
         try:
             if fingerprint(path) != fp:
                 raise Review("media_changed_during_work")
-            try:
-                os.link(path, backup)
-            except FileExistsError:
-                if fingerprint(backup) != fp:
-                    raise Review("media_backup_collision")
-            except OSError:
-                return fp, {"status": "backup_requires_same_filesystem"}
-            if fingerprint(backup) != fp or fingerprint(path) != fp:
-                raise Review("media_changed_during_backup")
+            backup = self.backup_link(path, fp, backup)
             command = [self.ffmpeg, "-v", "error", "-y", "-i", path, "-map", "0"]
             for index in remove:
                 command += ["-map", f"-0:{index}"]
@@ -744,7 +786,7 @@ class Manager:
             if item.get("Source") in {"radarr", "sonarr"}:
                 self.catalogue.db.execute("INSERT OR REPLACE INTO rescans VALUES(?,?)", (path, json.dumps(item)))
                 self.catalogue.db.commit()
-            os.replace(staged, path)
+            os.replace(staged, physical)
             new_fp = fingerprint(path)
             self.catalogue.db.execute("UPDATE captions SET fingerprint=? WHERE path=? AND fingerprint=?", (new_fp, path, fp))
             self.catalogue.db.execute("UPDATE rejected SET fingerprint=? WHERE path=? AND fingerprint=?", (new_fp, path, fp))

@@ -1,4 +1,5 @@
 import contextlib
+import errno
 import io
 import json
 import os
@@ -236,6 +237,28 @@ class OwnershipTests(unittest.TestCase):
         self.manager.cleanup_sidecars(str(self.video), self.fp, False)
         self.assertFalse(bad.exists())
         self.assertEqual(seed.read_bytes(), b"Turkish captions")
+
+    def test_mergerfs_backup_uses_source_branch_and_rejects_collisions(self):
+        base = self.root / "branch"
+        base.mkdir()
+        source = base / self.video.name
+        os.link(self.video, source)
+        destination = self.root / "archive" / "media" / "old.mkv"
+        destination.parent.mkdir(parents=True)
+        original_link = os.link
+        def link(src, dst):
+            if str(src) == str(self.video):
+                raise OSError(errno.EXDEV, "simulated branch mismatch")
+            return original_link(src, dst)
+        attributes = {"user.mergerfs.basepath": str(base).encode(), "user.mergerfs.fullpath": str(source).encode(),
+                      "user.mergerfs.relpath": b"/archive/media"}
+        with patch("manager.os.link", link), patch("manager.os.getxattr", lambda path, attr: attributes[attr]):
+            backup = self.manager.backup_link(str(self.video), self.fp, destination)
+            self.assertTrue(os.path.samefile(source, backup))
+            backup.unlink()
+            backup.write_bytes(b"different file")
+            with self.assertRaisesRegex(Review, "backup_collision"):
+                self.manager.backup_link(str(self.video), self.fp, destination)
 
     @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg required")
     def test_remux_preserves_original_and_seed_inodes(self):

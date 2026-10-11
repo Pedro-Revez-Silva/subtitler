@@ -81,7 +81,9 @@ exist; until then they remain available for review.
 Other containers remain for review. A verified backup hardlink is made outside
 the library before replacing its media path. Seeding hardlinks keep their original
 bytes. This consumes additional storage for remuxed media; the free-space floor
-is enforced. Backups are not automatically deleted.
+is enforced. MergerFS backups use the source's physical branch when pool link
+policies reject a cross-directory link; mount each branch at its host path in
+Docker. The pool's mount settings are untouched. Backups are not automatically deleted.
 
 Paid mode uses only `whisper-1` and `gpt-4o-mini` through the official API. Model
 prices were checked on 2026-10-11. Every request reserves a conservative upper
