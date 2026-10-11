@@ -748,35 +748,23 @@ class Manager:
 
     def prune(self, item, fp, streams, duration, complete):
         path = item["Path"]
-        if not self.cfg.get("prune_embedded") and not self.cfg.get("prune_audio"):
+        if not self.cfg.get("prune_embedded"):
             return fp, {"status": "disabled"}
-        original = language(item.get("OriginalLanguage"))
         remove = []
         for stream in streams:
+            # Audio is a read-only reference for subtitle verification. Legacy
+            # prune_audio settings cannot enable audio deletion.
+            if stream["codec_type"] != "subtitle":
+                continue
             tags = stream.get("tags", {})
             lang = language(tags.get("language"), tags.get("title"))
-            if stream["codec_type"] == "audio" and self.cfg.get("prune_audio") and original:
-                # Generic Portuguese might be the user's sole PT-PT dub: retain
-                # it until its country can be positively identified.
-                original_variant = original == "pt" and lang in {"pt", "pt-PT", "pt-BR"}
-                if lang and lang not in {"en", "pt-PT", "pt", original} and not original_variant:
-                    remove.append(stream["index"])
-            elif stream["codec_type"] == "subtitle" and self.cfg.get("prune_embedded"):
-                permitted = lang in self.languages
-                unwanted = (bool(lang) and lang not in {"en", "pt", "pt-PT"}) or (complete and lang not in {"en", "pt-PT"})
-                duplicate = complete and permitted and not stream.get("disposition", {}).get("forced")
-                if unwanted or duplicate:
-                    remove.append(stream["index"])
-        dialogue = {s["index"] for s in streams if s["codec_type"] == "audio"
-                    and not non_dialogue_audio(s)}
-        audio_review = None
-        if dialogue and dialogue <= set(remove):
-            # A wrong-language release must remain playable until ARR can
-            # replace it. Never leave only commentary, or remove its sole voice.
-            remove = [index for index in remove if index not in dialogue]
-            audio_review = "only_nonpreferred_dialogue_audio_available"
+            permitted = lang in self.languages
+            unwanted = (bool(lang) and lang not in {"en", "pt", "pt-PT"}) or (complete and lang not in {"en", "pt-PT"})
+            duplicate = complete and permitted and not stream.get("disposition", {}).get("forced")
+            if unwanted or duplicate:
+                remove.append(stream["index"])
         if not remove:
-            return fp, {"status": "no_change", "original_language_known": bool(original), "audio_review": audio_review}
+            return fp, {"status": "no_change"}
         if Path(path).suffix.lower() != ".mkv":
             return fp, {"status": "review_non_mkv", "remove_streams": remove}
         physical = backing_path(path)
@@ -815,7 +803,7 @@ class Manager:
             self.catalogue.db.execute("UPDATE captions SET fingerprint=? WHERE path=? AND fingerprint=?", (new_fp, path, fp))
             self.catalogue.db.execute("UPDATE rejected SET fingerprint=? WHERE path=? AND fingerprint=?", (new_fp, path, fp))
             self.catalogue.db.commit()
-            return new_fp, {"status": "remuxed", "removed_streams": remove, "backup": str(backup), "audio_review": audio_review}
+            return new_fp, {"status": "remuxed", "removed_streams": remove, "backup": str(backup)}
         finally:
             if staged.exists():
                 staged.unlink()
@@ -906,7 +894,7 @@ class Manager:
                     self.cleanup_sidecars(path, fp, complete)
                     new_fp, pruning = self.prune(item, fp, streams, duration, complete)
                     detail["track_policy"] = pruning
-                    status = "managed" if complete and not pruning.get("audio_review") else "needs_attention"
+                    status = "managed" if complete else "needs_attention"
             except Review as error:
                 detail["error"] = str(error)
             except Exception:

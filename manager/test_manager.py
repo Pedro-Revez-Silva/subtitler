@@ -319,37 +319,57 @@ class OwnershipTests(unittest.TestCase):
                 self.manager.backup_link(str(self.video), self.fp, destination)
 
     @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg required")
-    def test_wrong_language_release_keeps_its_only_dialogue_audio(self):
+    def test_legacy_audio_cleanup_setting_cannot_remove_any_audio(self):
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=32x32:d=2",
                         "-f", "lavfi", "-i", "anullsrc=r=16000:cl=mono", "-t", "2", "-map", "0:v", "-map", "1:a", "-map", "1:a",
                         "-c:v", "ffv1", "-c:a", "pcm_s16le", "-metadata:s:a:0", "language=eng", "-metadata:s:a:0", "title=Commentary",
                         "-metadata:s:a:1", "language=tur", str(self.video)], check=True)
         fp, original_sha = fingerprint(self.video), digest(self.video)
-        self.manager.cfg.update(prune_audio=True)
+        self.manager.cfg.update(prune_audio=True, prune_embedded=True)
         streams, duration = self.manager.probe(str(self.video))
         new_fp, status = self.manager.prune(self.item, fp, streams, duration, False)
         self.assertEqual(new_fp, fp)
         self.assertEqual(digest(self.video), original_sha)
-        self.assertEqual(status["audio_review"], "only_nonpreferred_dialogue_audio_available")
+        self.assertEqual(status["status"], "no_change")
+        self.manager.cfg.update(prune_embedded=False)
+        new_fp, status = self.manager.prune(self.item, fp, streams, duration, False)
+        self.assertEqual(status["status"], "disabled")
+        self.assertEqual(new_fp, fp)
 
     @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg required")
-    def test_remux_preserves_original_and_seed_inodes(self):
+    def test_subtitle_remux_preserves_every_audio_track_and_seed_inode(self):
+        captions = self.root / "turkish.srt"
+        captions.write_text("1\n00:00:00,000 --> 00:00:01,500\nTurkish caption\n")
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=32x32:d=2",
-                        "-f", "lavfi", "-i", "anullsrc=r=16000:cl=mono", "-t", "2", "-map", "0:v", "-map", "1:a", "-map", "1:a",
-                        "-c:v", "ffv1", "-c:a", "pcm_s16le", "-metadata:s:a:0", "language=eng", "-metadata:s:a:1", "language=tur", str(self.video)], check=True)
+                        "-f", "lavfi", "-i", "anullsrc=r=16000:cl=mono", "-i", str(captions), "-t", "2",
+                        "-map", "0:v", "-map", "1:a", "-map", "1:a", "-map", "1:a", "-map", "1:a", "-map", "2:s",
+                        "-c:v", "ffv1", "-c:a", "pcm_s16le", "-c:s", "srt",
+                        "-metadata:s:a:0", "language=eng", "-metadata:s:a:0", "title=Commentary",
+                        "-metadata:s:a:1", "language=tur", "-metadata:s:a:2", "language=por", "-metadata:s:a:2", "title=Brazilian Portuguese",
+                        "-metadata:s:a:3", "language=und", "-metadata:s:s:0", "language=tur", str(self.video)], check=True)
         fp = fingerprint(self.video)
         seed = self.root / "seed.mkv"
         os.link(self.video, seed)
         original_sha = digest(seed)
         self.manager.cfg.update(prune_audio=True, prune_embedded=True)
         streams, duration = self.manager.probe(str(self.video))
+        def audio_packets(path):
+            return [subprocess.check_output(["ffmpeg", "-v", "error", "-i", str(path), "-map", f"0:a:{index}",
+                                             "-c", "copy", "-f", "hash", "-hash", "sha256", "-"])
+                    for index in range(4)]
+        before_packets = audio_packets(self.video)
         new_fp, status = self.manager.prune(self.item, fp, streams, duration, False)
         self.assertEqual(status["status"], "remuxed")
         self.assertNotEqual(new_fp, fp)
         self.assertEqual(digest(seed), original_sha)
         self.assertEqual(digest(status["backup"]), original_sha)
         after, _ = self.manager.probe(str(self.video))
-        self.assertEqual(len([s for s in after if s["codec_type"] == "audio"]), 1)
+        audios = lambda ss: [(s["codec_name"], s.get("tags", {}).get("language"), s.get("tags", {}).get("title"), s.get("disposition"))
+                             for s in ss if s["codec_type"] == "audio"]
+        self.assertEqual(audios(after), audios(streams))
+        self.assertEqual(audio_packets(self.video), before_packets)
+        self.assertEqual(status["removed_streams"], [s["index"] for s in streams if s["codec_type"] == "subtitle"])
+        self.assertFalse(any(s["codec_type"] == "subtitle" for s in after))
 
 
 class BudgetAndProviderTests(unittest.TestCase):

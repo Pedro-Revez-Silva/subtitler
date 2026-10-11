@@ -33,7 +33,6 @@ type ManagementConfig struct {
 	ProvidersFile      string  `yaml:"providers_file" json:"providers_file"`
 	QuarantineDir      string  `yaml:"quarantine_dir" json:"quarantine_dir"`
 	PruneEmbedded      bool    `yaml:"prune_embedded" json:"prune_embedded"`
-	PruneAudio         bool    `yaml:"prune_audio" json:"prune_audio"`
 	LocalTranscription bool    `yaml:"local_transcription" json:"local_transcription"`
 	VerifyWords        bool    `yaml:"verify_words" json:"verify_words"`
 	MinFreeGB          int     `yaml:"min_free_gb" json:"min_free_gb"`

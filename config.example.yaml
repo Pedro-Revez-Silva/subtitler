@@ -16,7 +16,6 @@ management:
   verify_words: true
   local_transcription: true
   prune_embedded: true
-  prune_audio: true
   min_free_gb: 50
   paid_fallback: false
   paid_daily_usd: 1.0
