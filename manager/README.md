@@ -18,12 +18,14 @@ For each language, processing follows this order:
 3. If no usable local subtitle remains, search the configured providers and check
    every downloaded candidate through the same pipeline. Exact movie identity or
    series/season/episode matching is required; OpenSubtitles requests `pt-pt`.
-4. Only after searches for both languages finish, consider generation. Reuse an
-   accepted subtitle for translation before transcribing the audio again. Local
-   Whisper can generate a missing track from confirmed English/PT-PT audio. Paid
-   transcription is the final fallback, enabled explicitly with a daily limit.
+4. Only after searches for both languages finish, consider generation. Local
+   Whisper first generates a missing track from confirmed English/PT-PT audio.
+   An accepted subtitle can supply a translation when the target-language audio
+   is absent or local generation fails. Paid transcription is the final fallback,
+   enabled explicitly with a daily limit.
    Original foreign audio can be translated locally into English before PT-PT
-   translation. Text translations inherit the accepted source's exact timestamps.
+   translation. Text translations inherit the accepted source's exact timestamps;
+   matching-language audio still requires the ordinary word/timing checks.
 5. Publish atomically, save provenance and verification results, and quarantine
    superseded/rejected/unwanted captions. Provider outages defer generation.
 

@@ -501,12 +501,13 @@ class Manager:
                       "source_verification": source[1].get("timing", {}), "content_proof": False}
             content = {"status": "translated_from_accepted_subtitle", "source_language": source_lang,
                        "source_content_verification": source[1].get("content", {}).get("status"), "translation_words_unverified": True}
-        if timing is None and audio_lang == lang and self.cfg.get("verify_words"):
+        if audio_lang == lang and self.cfg.get("verify_words") and (timing is None or provenance.get("derived_from_sha")):
             try:
                 content = self.verify_words(reference, cues, lang, work)
                 if content["status"] == "verified_samples":
-                    timing = {"method": "sampled_word_timestamps", "offset_seconds": 0, "framerate_scale": 1,
-                              "content_proof": "three_samples"}
+                    if timing is None:
+                        timing = {"method": "sampled_word_timestamps", "offset_seconds": 0, "framerate_scale": 1,
+                                  "content_proof": "three_samples"}
                     shutil.copy2(normalized, aligned)
             except Review as error:
                 if str(error) != "words_do_not_match_audio_timing":
@@ -529,7 +530,7 @@ class Manager:
                 except Exception:
                     raise Review("local_word_verifier_unavailable") from None
         structure = validate(cues, duration)
-        if audio_lang == lang and self.cfg.get("verify_words") and not provenance.get("derived_from_sha"):
+        if audio_lang == lang and self.cfg.get("verify_words"):
             if content["status"] == "mismatch":
                 raise Review("words_do_not_match_audio_timing")
             if content["status"] != "verified_samples":
@@ -619,6 +620,19 @@ class Manager:
         reference = work / f"audio-{audio['index']}.wav"
         tags = audio.get("tags", {})
         audio_lang = language(tags.get("language"), tags.get("title"))
+        translate_audio = lang == "en" and audio_lang not in {"en", "pt-PT"} and bool(audio_lang)
+        # Free transcription of the actual dialogue precedes any paid operation
+        # when it can supply the requested language. Cross-language PT-PT text
+        # can instead inherit a verified source's clock after provider searches.
+        if (audio_lang == lang or translate_audio) and self.cfg.get("local_transcription"):
+            try:
+                candidate, provenance = self.transcribe(reference, lang, work, duration,
+                                                       source_language=audio_lang if translate_audio else None, translate=translate_audio)
+                return self.publish(item, fp, lang, candidate, provenance, reference, audio, duration, work)
+            except Review as error:
+                current = {**current, "local_transcription_failure": str(error)}
+            except Exception:
+                current = {**current, "local_transcription_failure": "local_model_unavailable"}
         other = "en" if lang == "pt-PT" else "pt-PT"
         source = detail.get(other, {})
         # Translation reuses verified cue timing instead of transcribing the
@@ -638,23 +652,17 @@ class Manager:
                                   "derived_from_sha": source_sha, "derived_from_language": other,
                                   "language_evidence": "explicit_European_Portuguese_prompt" if lang == "pt-PT" else "English"}
                     return self.publish(item, fp, lang, output, provenance, reference, audio, duration, work)
-                except (PaidUnavailable, Review) as error:
+                except PaidUnavailable as error:
                     current = {**current, "translation_failure": str(error)}
                     # Budget or provider problems must not trigger a more
                     # expensive transcription of the same known subtitle.
                     return current
-        translate_audio = lang == "en" and audio_lang not in {"en", "pt-PT"} and bool(audio_lang)
+                except Review as error:
+                    current = {**current, "translation_failure": str(error)}
+                    if str(error) != "words_do_not_match_audio_timing":
+                        return current
         if audio_lang != lang and not translate_audio:
             return {**current, "generation_deferred": "no_confirmed_target_language_audio_or_verified_translation_source"}
-        if self.cfg.get("local_transcription"):
-            try:
-                candidate, provenance = self.transcribe(reference, lang, work, duration,
-                                                       source_language=audio_lang if translate_audio else None, translate=translate_audio)
-                return self.publish(item, fp, lang, candidate, provenance, reference, audio, duration, work)
-            except Review as error:
-                current = {**current, "local_transcription_failure": str(error)}
-            except Exception:
-                current = {**current, "local_transcription_failure": "local_model_unavailable"}
         if not self.cfg.get("paid_fallback"):
             return current
         try:

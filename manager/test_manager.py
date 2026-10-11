@@ -187,7 +187,7 @@ class OwnershipTests(unittest.TestCase):
             cue.text = f"Olá meu amigo número {i}, amanhã vamos visitar o jardim com a nossa família."
         cues.save(str(candidate), format_="srt")
         provenance = {"source": "paid_translation", "derived_from_sha": digest(source), "derived_from_language": "en"}
-        stream = {"index": 2, "tags": {"language": "por", "title": "European"}}
+        stream = {"index": 1, "tags": {"language": "eng"}}
         with patch.object(self.manager, "sync", side_effect=AssertionError("alignment called")), \
              patch.object(self.manager, "verify_words", side_effect=AssertionError("literal translation matching called")):
             result = self.manager.publish(self.item, self.fp, "pt-PT", candidate, provenance, None, stream, 120, self.root)
@@ -199,6 +199,31 @@ class OwnershipTests(unittest.TestCase):
         source.write_text("changed source")
         with self.assertRaisesRegex(Review, "translation_source_changed"):
             self.manager.publish(self.item, self.fp, "pt-PT", candidate, provenance, None, stream, 120, self.root)
+
+    def test_same_language_translation_must_match_the_actual_dub(self):
+        source = self.caption()
+        candidate = self.root / "translated.srt"
+        cues = dialogue()
+        for i, cue in enumerate(cues):
+            cue.text = f"Olá meu amigo número {i}, amanhã vamos visitar o jardim com a nossa família."
+        cues.save(str(candidate), format_="srt")
+        provenance = {"source": "paid_translation", "derived_from_sha": digest(source), "derived_from_language": "en"}
+        stream = {"index": 2, "tags": {"language": "por", "title": "European"}}
+        with patch.object(self.manager, "verify_words", return_value={"status": "mismatch"}) as verify:
+            with self.assertRaisesRegex(Review, "words_do_not_match_audio_timing"):
+                self.manager.publish(self.item, self.fp, "pt-PT", candidate, provenance, None, stream, 120, self.root)
+        verify.assert_called_once()
+
+    def test_free_target_audio_generation_precedes_paid_translation(self):
+        self.manager.cfg.update(local_transcription=True, paid_fallback=True, paid_daily_usd=1)
+        audio = {"codec_type": "audio", "index": 1, "tags": {"language": "eng"}}
+        detail = {"en": {"providers": {"opensubtitlescom": "searched"}}, "pt-PT": {"output": "source.srt"}}
+        with patch("paid.Paid", side_effect=AssertionError("paid called")), \
+             patch.object(self.manager, "transcribe", return_value=(self.root / "generated.srt", {"source": "local_transcription"})) as transcribe, \
+             patch.object(self.manager, "publish", return_value={"output": "local.srt"}):
+            result = self.manager.fallback(self.item, self.fp, [audio], 120, "en", detail, self.root)
+        transcribe.assert_called_once()
+        self.assertEqual(result["output"], "local.srt")
 
     def test_reporting_source_invalidates_its_translation(self):
         self.register()

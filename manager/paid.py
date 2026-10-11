@@ -107,7 +107,8 @@ class Paid:
         cached = self.cached(key)
         if cached is not None:
             return cached
-        self.reserve(math.ceil(seconds) / 60 * 0.006, "transcribe")
+        # MP3 encoder delay/padding can add a fraction of a second to the clip.
+        self.reserve(math.ceil(seconds + 2) / 60 * 0.006, "transcribe")
         with open(audio, "rb") as handle:
             data = {"model": "whisper-1", "response_format": "srt"}
             if not translate:
