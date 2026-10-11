@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	sublang "github.com/Pedro-Revez-Silva/subtitler/internal/language"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -122,6 +124,19 @@ func Load(path string) (Config, error) {
 		return Config{}, err
 	}
 	cfg.applyDefaults()
+	var languages []string
+	seen := make(map[string]bool)
+	for _, value := range cfg.Subtitles.RequiredLanguages {
+		code, err := sublang.Normalize(value)
+		if err != nil {
+			return Config{}, errors.New("subtitles.required_languages must contain ISO language tags with optional script/country")
+		}
+		if !seen[code] {
+			languages = append(languages, code)
+			seen[code] = true
+		}
+	}
+	cfg.Subtitles.RequiredLanguages = languages
 	if err := cfg.validate(); err != nil {
 		return Config{}, err
 	}
@@ -175,7 +190,7 @@ func (c *Config) applyDefaults() {
 	if c.Telemetry.Environment == "" {
 		c.Telemetry.Environment = "production"
 	}
-	if len(c.Subtitles.RequiredLanguages) == 0 {
+	if c.Subtitles.RequiredLanguages == nil {
 		c.Subtitles.RequiredLanguages = []string{"en"}
 	}
 	if len(c.Subtitles.SourceAudioLanguages) == 0 {
@@ -268,6 +283,9 @@ func parseBoolEnv(value string) (bool, bool) {
 }
 
 func (c Config) validate() error {
+	if len(c.Subtitles.RequiredLanguages) == 0 {
+		return errors.New("subtitles.required_languages cannot be empty")
+	}
 	if c.Subtitles.Output.Format != "srt" {
 		return errors.New("only srt output is supported right now")
 	}

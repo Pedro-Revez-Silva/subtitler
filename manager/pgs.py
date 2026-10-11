@@ -11,6 +11,7 @@ import io
 import os
 import statistics
 import subprocess
+from locales import ocr_language
 
 
 def integer(data):
@@ -128,7 +129,7 @@ def recognize(image, lang):
     payload = io.BytesIO()
     image.save(payload, format="PNG")
     env = dict(os.environ, OMP_THREAD_LIMIT="1")
-    result = subprocess.run(["tesseract", "stdin", "stdout", "-l", "por" if lang == "pt-PT" else "eng", "--psm", "6", "tsv"],
+    result = subprocess.run(["tesseract", "stdin", "stdout", "-l", ocr_language(lang), "--psm", "6", "tsv"],
                             input=payload.getvalue(), capture_output=True, timeout=30, env=env)
     if result.returncode:
         raise ValueError("local_ocr_unavailable")

@@ -1,15 +1,14 @@
-"""Strict provider adapters. Generic Portuguese never satisfies PT-PT."""
+"""Provider adapters with exact matching for requested regional variants."""
 import io
 import json
 import re
 from urllib.parse import urljoin, urlparse
 import zipfile
+from locales import language, locale, matches, tag
 
 
 def accepted_language(lang, wanted):
-    if wanted == "pt-PT":
-        return lang.alpha3 == "por" and lang.country is not None and lang.country.alpha2 == "PT"
-    return lang.alpha3 == "eng"
+    return matches(tag(lang), wanted)
 
 
 def identity(matches, episode):
@@ -26,7 +25,6 @@ def settings(path):
 
 
 def candidates(item, lang, work, config_path, rejected, health):
-    from babelfish import Language
     from subliminal import Episode, Movie, ProviderPool, compute_score, scan_video
     from subliminal.cache import region
     from subliminal.core import provider_manager
@@ -44,7 +42,7 @@ def candidates(item, lang, work, config_path, rejected, health):
         video.title = item["Title"]
         video.year = item.get("Year") or video.year
         video.imdb_id = item.get("IMDBID") or video.imdb_id
-    wanted = Language("por", "PT") if lang == "pt-PT" else Language("eng")
+    wanted = locale(lang)
     providers = [p for p in config.get("providers", []) if p != "yifysubtitles"]
     credentials = config.get("credentials", {})
     if "opensubtitlescom" in providers:
@@ -57,9 +55,9 @@ def candidates(item, lang, work, config_path, rejected, health):
                     # Search the actual movie rather than progressively broad
                     # title searches which can return unrelated films.
                     subtitles = pool[provider].query({wanted}, imdb_id=video.imdb_id)
-                elif provider == "opensubtitlescom" and lang == "pt-PT":
-                    # In 2.7.1 the supported-language set omits PT-PT even though
-                    # its converter and API support the exact pt-pt code.
+                elif provider == "opensubtitlescom":
+                    # The supported-language set can omit regional variants
+                    # even when the converter and API accept the requested tag.
                     subtitles = pool[provider].list_subtitles(video, {wanted})
                 else:
                     plugin = provider_manager[provider].plugin
@@ -104,8 +102,8 @@ def candidates(item, lang, work, config_path, rejected, health):
             except Exception:
                 health[subtitle.provider_name] = "download_unavailable"
                 continue
-    if "yifysubtitles" in config.get("providers", []) and lang == "en" and isinstance(video, Movie) and video.imdb_id:
-        yield from yify(video.imdb_id, work, rejected, health)
+    if "yifysubtitles" in config.get("providers", []) and isinstance(video, Movie) and video.imdb_id:
+        yield from yify(video.imdb_id, work, rejected, health, lang)
 
 
 def safe_yify_url(value):
@@ -131,7 +129,7 @@ def limited_get(session, url):
     return bytes(data)
 
 
-def yify(imdb, work, rejected, health):
+def yify(imdb, work, rejected, health, lang):
     import requests
     from bs4 import BeautifulSoup
     if not re.fullmatch(r"tt\d+", imdb):
@@ -145,7 +143,7 @@ def yify(imdb, work, rejected, health):
             downloaded = 0
             for row in rows:
                 cells = row.find_all("td")
-                if len(cells) < 3 or cells[1].get_text(strip=True) != "English":
+                if len(cells) < 3 or not matches(language(cells[1].get_text(strip=True)), lang):
                     continue
                 link = cells[2].find("a", href=True)
                 if not link:
@@ -170,7 +168,7 @@ def yify(imdb, work, rejected, health):
                     output = work / f"yify-{downloaded}.srt"
                     output.write_bytes(archive.read(files[0]))
                     yield output, {"source": "provider", "provider": "yifysubtitles", "source_id": source,
-                                   "matches": ["imdb_id"], "language_evidence": "English"}
+                                   "matches": ["imdb_id"], "language_evidence": language(cells[1].get_text(strip=True))}
         except Exception:
             health["yifysubtitles"] = "unavailable"
             return

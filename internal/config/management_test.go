@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -27,6 +28,31 @@ func TestManagementConfiguration(t *testing.T) {
 		}
 		if tc.valid && !cfg.Management.VerifyWords {
 			t.Fatal("lost word verification setting")
+		}
+	}
+}
+
+func TestConfiguredSubtitleLanguages(t *testing.T) {
+	for _, tc := range []struct {
+		values string
+		want   []string
+	}{
+		{"[fr, es, de]", []string{"fr", "es", "de"}},
+		{"[pt_BR, en-us, eng, EN]", []string{"pt-BR", "en-US", "en"}},
+		{"[zh-Hant-TW]", []string{"zh-Hant-TW"}},
+		{"[auto]", nil}, {"[xx]", nil}, {"['../en']", nil}, {"['']", nil}, {"[]", nil},
+	} {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte("subtitles:\n  required_languages: "+tc.values+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(path)
+		if tc.want == nil {
+			if err == nil {
+				t.Fatalf("accepted invalid language settings %s", tc.values)
+			}
+		} else if err != nil || !reflect.DeepEqual(cfg.Subtitles.RequiredLanguages, tc.want) {
+			t.Fatalf("languages %s = %v, %v; want %v", tc.values, cfg.Subtitles.RequiredLanguages, err, tc.want)
 		}
 	}
 }

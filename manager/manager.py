@@ -25,15 +25,9 @@ import tempfile
 import time
 import unicodedata
 import uuid
+from locales import ambiguous, base_language, language, matches, normalize, text_language_supported
 
 logging.disable(logging.CRITICAL)  # third-party exceptions may contain credentials
-LANGUAGES = {"english": "en", "eng": "en", "en": "en",
-             "portuguese": "pt", "por": "pt", "pt": "pt",
-             "japanese": "ja", "jpn": "ja", "korean": "ko", "kor": "ko",
-             "turkish": "tr", "tur": "tr", "french": "fr", "fra": "fr", "fre": "fr",
-             "spanish": "es", "spa": "es", "german": "de", "deu": "de", "ger": "de",
-             "italian": "it", "ita": "it", "chinese": "zh", "zho": "zh", "chi": "zh",
-             "russian": "ru", "rus": "ru", "hindi": "hi", "hin": "hi"}
 SUB_EXTS = {".srt", ".ass", ".ssa", ".vtt", ".sub", ".idx", ".sup"}
 TEXT_CODECS = {"subrip", "srt", "ass", "ssa", "webvtt", "mov_text", "text"}
 REASONS = {"out_of_sync", "wrong_text", "wrong_language", "missing"}
@@ -48,24 +42,6 @@ def non_dialogue_audio(stream):
 
 class Review(Exception):
     """A stable, non-secret reason that can be recorded in the catalogue."""
-
-
-def language(value, title=""):
-    value = (value or "").lower().replace("_", "-").strip()
-    title = (title or "").lower()
-    if value in {"pt-br", "pob"} or re.search(r"brazil|brasil|pt[-_ ]br", title):
-        return "pt-BR"
-    if value == "pt-pt" or re.search(r"portugal|european portuguese|pt[-_ ]pt", title) or (value in {"por", "pt", "portuguese"} and re.search(r"european|iberian", title)):
-        return "pt-PT"
-    if value in LANGUAGES:
-        return LANGUAGES[value]
-    if len(value) == 2:
-        return value
-    try:
-        from babelfish import Language
-        return (Language.fromalpha3b(value) if len(value) == 3 else Language.fromname(value.title())).alpha2
-    except Exception:
-        return ""
 
 
 def backing_path(path):
@@ -90,7 +66,8 @@ def digest(path):
 
 
 def canonical(path, lang):
-    suffix = ".subtitler.pt-PT.pt.srt" if lang == "pt-PT" else ".subtitler.en.srt"
+    lang = normalize(lang)
+    suffix = ".subtitler." + lang + ("." + base_language(lang) if "-" in lang else "") + ".srt"
     return str(Path(path).with_suffix("")) + suffix
 
 
@@ -113,7 +90,11 @@ def sidecars(path):
 def words(text):
     text = re.sub(r"<[^>]*>|\{[^}]*\}|\[[^]]*\]", " ", text)
     text = unicodedata.normalize("NFKD", text.lower())
-    return re.findall(r"[a-z0-9]+", "".join(c for c in text if not unicodedata.combining(c)))
+    text = "".join(c for c in text if not unicodedata.combining(c))
+    # Keep non-Latin writing. CJK scripts do not require word separators, so
+    # compare their characters against the same normalized ASR characters.
+    text = re.sub(r"([\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff\U00020000-\U0002fa1f])", r" \1 ", text)
+    return re.findall(r"[^\W_]+", text)
 
 
 def validate(cues, duration):
@@ -204,6 +185,7 @@ class Catalogue:
             CREATE TABLE IF NOT EXISTS feedback(id INTEGER PRIMARY KEY, path TEXT, fingerprint TEXT,
                 language TEXT, sha TEXT, reason TEXT, applied INTEGER DEFAULT 0);
             CREATE TABLE IF NOT EXISTS rescans(path TEXT PRIMARY KEY, item TEXT);
+            CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
         """)
         self.db.commit()
 
@@ -226,7 +208,11 @@ class Catalogue:
         self.db.commit()
 
     def report(self, path, lang, reason):
-        if lang not in {"en", "pt-PT"} or reason not in REASONS:
+        try:
+            lang = normalize(lang)
+        except ValueError:
+            raise Review("invalid_feedback") from None
+        if reason not in REASONS:
             raise Review("invalid_feedback")
         if not Path(path).is_absolute():
             matches = [p for p, item in self.db.execute("SELECT path,item FROM media")
@@ -257,9 +243,13 @@ class Manager:
         self.catalogue = Catalogue(self.cfg["state_dir"])
         os.environ.setdefault("HF_HOME", str(self.catalogue.root / "models" / "hub"))
         os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
-        self.languages = request.get("languages") or ["pt-PT", "en"]
-        if set(self.languages) - {"pt-PT", "en"}:
-            raise Review("ownership_supports_en_and_pt_PT_only")
+        try:
+            configured = request.get("languages", ["en"])
+            if not configured:
+                raise ValueError("empty_required_subtitle_languages")
+            self.languages = list(dict.fromkeys(normalize(v) for v in configured))
+        except ValueError:
+            raise Review("invalid_required_subtitle_language") from None
         self.ffmpeg = request.get("ffmpeg") or "ffmpeg"
         self.ffprobe = request.get("ffprobe") or "ffprobe"
         self.quarantine = Path(self.cfg["quarantine_dir"])
@@ -280,10 +270,10 @@ class Manager:
     def audio(self, streams, lang, original):
         audios = [s for s in streams if s["codec_type"] == "audio"
                   and not non_dialogue_audio(s)]
-        for wanted in [lang, original, "en"]:
+        for wanted in [lang, original, *self.languages]:
             for stream in audios:
                 tags = stream.get("tags", {})
-                if wanted and language(tags.get("language"), tags.get("title")) == wanted:
+                if wanted and matches(language(tags.get("language"), tags.get("title")), wanted):
                     return stream
         if not audios:
             raise Review("no_dialogue_audio")
@@ -383,7 +373,7 @@ class Manager:
         starts = [c.start / 1000 for c in cues if len(words(c.text)) >= 4]
         if len(starts) < 12:
             return {"status": "inconclusive", "reason": "too_little_dialogue"}
-        key = str(reference)
+        key = (str(reference), base_language(lang))
         if key not in self.word_samples:
             samples = []
             for fraction in [0.15, 0.5, 0.85]:
@@ -391,7 +381,7 @@ class Manager:
                 sample = work / f"sample-{fraction}.wav"
                 run([self.ffmpeg, "-v", "error", "-y", "-ss", str(start), "-i", str(reference),
                      "-t", "60", "-ar", "16000", "-ac", "1", str(sample)], 120)
-                segments, info = self.speech_model().transcribe(str(sample), language="pt" if lang == "pt-PT" else "en",
+                segments, info = self.speech_model().transcribe(str(sample), language=base_language(lang),
                                                               word_timestamps=True, vad_filter=True, beam_size=3)
                 recognized = [(w.word, w.start + start, w.end + start) for s in segments for w in (s.words or [])]
                 samples.append((start, recognized))
@@ -404,8 +394,12 @@ class Manager:
 
     def local_candidates(self, item, streams, lang, work):
         path = item["Path"]
+        cached = self.catalogue.caption(path, fingerprint(path), lang)
+        if cached and cached[1].get("internal_source") and lang in self.languages:
+            if Path(cached[1]["output"]).exists() and digest(cached[1]["output"]) == cached[0]:
+                yield Path(cached[1]["output"]), {**cached[1], "internal_source": False}
         for sidecar in sidecars(path):
-            if sidecar["language"] == lang and not sidecar["forced"] and Path(sidecar["path"]).suffix.lower() not in {".idx", ".sup", ".sub"}:
+            if matches(sidecar["language"], lang) and not sidecar["forced"] and Path(sidecar["path"]).suffix.lower() not in {".idx", ".sup", ".sub"}:
                 yield Path(sidecar["path"]), {"source": "sidecar", "source_id": "", "original_path": sidecar["path"]}
         for stream in streams:
             tags = stream.get("tags", {})
@@ -413,13 +407,13 @@ class Manager:
                 continue
             if re.search(r"commentary|forced|foreign|signs(?: and songs)?", tags.get("title", ""), re.I):
                 continue
-            if language(tags.get("language"), tags.get("title")) != lang:
+            if not matches(language(tags.get("language"), tags.get("title")), lang):
                 continue
             if stream["codec_name"] == "hdmv_pgs_subtitle":
                 from pgs import convert
                 cache_dir = self.catalogue.root / "ocr"
                 cache_dir.mkdir(exist_ok=True)
-                key = hashlib.sha256((path + fingerprint(path) + str(stream["index"])).encode()).hexdigest()
+                key = hashlib.sha256((path + fingerprint(path) + str(stream["index"]) + lang).encode()).hexdigest()
                 output = cache_dir / (key + ".srt")
                 metadata = cache_dir / (key + ".json")
                 try:
@@ -461,7 +455,7 @@ class Manager:
 
     def transcribe(self, reference, lang, work, duration, source_language=None, translate=False):
         import pysubs2
-        selected = (source_language or ("pt" if lang == "pt-PT" else "en")).split("-")[0]
+        selected = base_language(source_language or lang)
         segments, info = self.speech_model().transcribe(str(reference), language=selected or None,
                                                       task="translate" if translate else "transcribe",
                                                       vad_filter=True, word_timestamps=False, beam_size=5)
@@ -485,15 +479,18 @@ class Manager:
         DetectorFactory.seed = 0
         text = " ".join(c.plaintext for c in cues)
         detected = detect_langs(text[:30000])
-        expected = "pt" if lang == "pt-PT" else "en"
-        if not detected or detected[0].lang != expected or detected[0].prob < .8:
+        expected = base_language(lang)
+        if not text_language_supported(lang):
+            raise Review("subtitle_language_detector_unavailable")
+        if not detected or base_language(detected[0].lang) != expected or detected[0].prob < .8:
             raise Review("subtitle_language_mismatch")
         normalized = work / "normalized.srt"
         cues.save(str(normalized), format_="srt")
         aligned = work / "aligned.srt"
         tags = audio.get("tags", {})
         audio_lang = language(tags.get("language"), tags.get("title"))
-        content = {"status": "translated_text_unverified" if audio_lang != lang else "not_checked"}
+        same_language = bool(audio_lang) and base_language(audio_lang) == base_language(lang)
+        content = {"status": "not_checked" if same_language else "translated_text_unverified"}
         timing = None
         if provenance.get("derived_from_sha"):
             source_lang = provenance["derived_from_language"]
@@ -508,7 +505,7 @@ class Manager:
                       "source_verification": source[1].get("timing", {}), "content_proof": False}
             content = {"status": "translated_from_accepted_subtitle", "source_language": source_lang,
                        "source_content_verification": source[1].get("content", {}).get("status"), "translation_words_unverified": True}
-        if audio_lang == lang and self.cfg.get("verify_words") and (timing is None or provenance.get("derived_from_sha")):
+        if same_language and self.cfg.get("verify_words") and (timing is None or provenance.get("derived_from_sha")):
             try:
                 content = self.verify_words(reference, cues, lang, work)
                 if content["status"] == "verified_samples":
@@ -522,14 +519,14 @@ class Manager:
             except Exception:
                 raise Review("local_word_verifier_unavailable") from None
         if timing is None:
-            if audio_lang == lang and content["status"] == "mismatch":
+            if same_language and content["status"] == "mismatch":
                 timing = text_alignment(cues, content)
                 if timing:
                     cues.save(str(aligned), format_="srt")
             if timing is None:
                 timing = self.sync(reference, normalized, aligned)
             cues = self.load(aligned, duration)
-            if audio_lang == lang and self.cfg.get("verify_words"):
+            if same_language and self.cfg.get("verify_words"):
                 try:
                     content = self.verify_words(reference, cues, lang, work)
                 except Review:
@@ -537,16 +534,22 @@ class Manager:
                 except Exception:
                     raise Review("local_word_verifier_unavailable") from None
         structure = validate(cues, duration)
-        if audio_lang == lang and self.cfg.get("verify_words"):
+        if same_language and self.cfg.get("verify_words"):
             if content["status"] == "mismatch":
                 raise Review("words_do_not_match_audio_timing")
             if content["status"] != "verified_samples":
                 raise Review("word_verification_inconclusive")
-        elif audio_lang != lang and provenance["source"] == "sidecar" and not provenance.get("owned_before"):
+        elif not same_language and provenance["source"] == "sidecar" and not provenance.get("owned_before"):
             # Unknown local translated tracks require a provider edition match,
             # or a human judgement; VAD alone cannot prove which film they are.
             raise Review("translated_sidecar_identity_unverified")
-        output = canonical(path, lang)
+        internal = lang not in self.languages
+        if internal:
+            directory = self.catalogue.root / "sources" / hashlib.sha256((path + fp).encode()).hexdigest()[:20]
+            directory.mkdir(parents=True, exist_ok=True)
+            output = str(directory / (normalize(lang) + ".srt"))
+        else:
+            output = canonical(path, lang)
         if fingerprint(path) != fp:
             raise Review("media_changed_during_work")
         final_sha = digest(aligned)
@@ -555,7 +558,7 @@ class Manager:
         original_backup = None
         if Path(output).exists():
             original_backup = self.archive(output, path)
-        fd, staged = tempfile.mkstemp(prefix=".subtitler-", suffix=".part", dir=str(Path(path).parent))
+        fd, staged = tempfile.mkstemp(prefix=".subtitler-", suffix=".part", dir=str(Path(output).parent))
         try:
             with os.fdopen(fd, "wb") as handle:
                 handle.write(aligned.read_bytes())
@@ -568,7 +571,7 @@ class Manager:
         finally:
             if os.path.exists(staged):
                 os.unlink(staged)
-        data = {**provenance, "output": output, "input_sha": original_sha, "sha": final_sha,
+        data = {**provenance, "output": output, "internal_source": internal, "input_sha": original_sha, "sha": final_sha,
                 "structure": structure, "timing": timing, "content": content,
                 "audio_stream": audio["index"], "audio_language": audio_lang,
                 "checked_at": time.time(), "backup": original_backup}
@@ -578,7 +581,8 @@ class Manager:
     def ensure(self, item, fp, streams, duration, lang, work):
         path = item["Path"]
         saved = self.catalogue.caption(path, fp, lang)
-        if saved and Path(saved[1]["output"]).exists() and digest(saved[1]["output"]) == saved[0]:
+        if (saved and not (saved[1].get("internal_source") and lang in self.languages)
+                and Path(saved[1]["output"]).exists() and digest(saved[1]["output"]) == saved[0]):
             return saved[1]
         self.emit(path=path, language=lang, stage="checking_existing_subtitles")
         original = language(item.get("OriginalLanguage"))
@@ -599,7 +603,7 @@ class Manager:
                         return self.publish(item, fp, lang, candidate, provenance, reference, audio, duration, work)
                     except Review as error:
                         failures.append(str(error))
-                        if str(error) not in {"media_changed_during_work", "local_word_verifier_unavailable", "word_verification_inconclusive", "timing_alignment_inconclusive", "translated_sidecar_identity_unverified", "previously_rejected"}:
+                        if str(error) not in {"media_changed_during_work", "local_word_verifier_unavailable", "subtitle_language_detector_unavailable", "word_verification_inconclusive", "timing_alignment_inconclusive", "translated_sidecar_identity_unverified", "previously_rejected"}:
                             self.catalogue.reject(path, fp, lang, digest(candidate), provenance.get("source_id", ""), str(error))
             except Review as error:
                 failures.append(str(error))
@@ -614,8 +618,11 @@ class Manager:
         current = detail[lang]
         if "output" in current:
             return current
-        if "local_word_verifier_unavailable" in current.get("failures", []):
-            return {**current, "generation_deferred": "local_word_verifier_unavailable"}
+        if not text_language_supported(lang):
+            return {**current, "generation_deferred": "subtitle_language_detector_unavailable"}
+        unavailable = {"local_word_verifier_unavailable", "subtitle_language_detector_unavailable"}.intersection(current.get("failures", []))
+        if unavailable:
+            return {**current, "generation_deferred": sorted(unavailable)[0]}
         uncertain = {"word_verification_inconclusive", "timing_alignment_inconclusive", "translated_sidecar_identity_unverified"}
         if uncertain.intersection(current.get("failures", [])):
             return {**current, "generation_deferred": "existing_candidate_needs_review"}
@@ -627,11 +634,14 @@ class Manager:
         reference = work / f"audio-{audio['index']}.wav"
         tags = audio.get("tags", {})
         audio_lang = language(tags.get("language"), tags.get("title"))
-        translate_audio = lang == "en" and audio_lang != "en" and bool(audio_lang)
+        target_audio = matches(audio_lang, lang)
+        # Whisper's audio-translation task outputs English only. Other targets
+        # use transcription in the actual dialogue language or text translation.
+        translate_audio = lang == "en" and bool(audio_lang) and base_language(audio_lang) != "en"
         # Free transcription of the actual dialogue precedes any paid operation
-        # when it can supply the requested language. Cross-language PT-PT text
-        # can instead inherit a verified source's clock after provider searches.
-        if (audio_lang == lang or translate_audio) and self.cfg.get("local_transcription"):
+        # when it can supply the requested language. Translated text can inherit
+        # a verified source's clock after provider searches.
+        if (target_audio or translate_audio) and self.cfg.get("local_transcription"):
             try:
                 candidate, provenance = self.transcribe(reference, lang, work, duration,
                                                        source_language=audio_lang if translate_audio else None, translate=translate_audio)
@@ -640,8 +650,20 @@ class Manager:
                 current = {**current, "local_transcription_failure": str(error)}
             except Exception:
                 current = {**current, "local_transcription_failure": "local_model_unavailable"}
-        other = "en" if lang == "pt-PT" else "pt-PT"
+        other = next((l for l, d in detail.items() if l != lang and "output" in d), "")
         source = detail.get(other, {})
+        if ("output" not in source and not target_audio and not translate_audio
+                and audio_lang and self.cfg.get("paid_fallback")):
+            # A single requested language still works with foreign dialogue.
+            # Verify/cache its actual-language source outside the media library,
+            # using free subtitles/local transcription before paid operations.
+            other = audio_lang
+            source = self.ensure(item, fp, streams, duration, other, work)
+            if "output" not in source:
+                source = self.fallback(item, fp, streams, duration, other, {other: source}, work)
+            if "output" not in source:
+                return {**current, "generation_deferred": "verified_translation_source_unavailable",
+                        "translation_source_failure": source.get("generation_deferred") or source.get("local_transcription_failure") or source.get("paid_failure")}
         # Translation reuses verified cue timing instead of transcribing the
         # same film again. It is available only AFTER target-language searches.
         if "output" in source and self.cfg.get("paid_fallback"):
@@ -657,7 +679,7 @@ class Manager:
                     cues.save(str(output), format_="srt")
                     provenance = {"source": "paid_translation", "source_id": source_id,
                                   "derived_from_sha": source_sha, "derived_from_language": other,
-                                  "language_evidence": "explicit_European_Portuguese_prompt" if lang == "pt-PT" else "English"}
+                                  "language_evidence": "explicit_translation_target:" + lang}
                     return self.publish(item, fp, lang, output, provenance, reference, audio, duration, work)
                 except PaidUnavailable as error:
                     current = {**current, "translation_failure": str(error)}
@@ -668,7 +690,7 @@ class Manager:
                     current = {**current, "translation_failure": str(error)}
                     if str(error) != "words_do_not_match_audio_timing":
                         return current
-        if audio_lang != lang and not translate_audio:
+        if not target_audio and not translate_audio:
             return {**current, "generation_deferred": "no_confirmed_target_language_audio_or_verified_translation_source"}
         if not self.cfg.get("paid_fallback"):
             return current
@@ -683,7 +705,7 @@ class Manager:
                 clip = work / "paid-audio.mp3"
                 run([self.ffmpeg, "-v", "error", "-y", "-ss", str(offset), "-i", str(reference),
                      "-t", str(seconds), "-ac", "1", "-ar", "16000", "-b:a", "64k", str(clip)])
-                content = paid.transcribe(clip, seconds, "pt" if lang == "pt-PT" else lang,
+                content = paid.transcribe(clip, seconds, base_language(audio_lang or lang),
                                           item["Path"] + fp + str(offset), translate=translate_audio)
                 chunk = pysubs2.SSAFile.from_string(content, format_="srt")
                 for cue in chunk:
@@ -699,12 +721,13 @@ class Manager:
             return {**current, "paid_failure": str(error), "generation_attempted": True}
 
     def cleanup_sidecars(self, path, fp, complete):
+        outputs = {canonical(path, wanted) for wanted in self.languages}
         for sidecar in sidecars(path):
             lang = sidecar["language"]
-            permitted = lang in self.languages
-            # Ambiguous Portuguese/unknown tracks are preserved pending review.
-            unwanted = (bool(lang) and lang not in {"en", "pt", "pt-PT"}) or (complete and lang not in {"en", "pt-PT"})
-            duplicate = complete and permitted and not sidecar["forced"] and sidecar["path"] != canonical(path, lang)
+            permitted = any(matches(lang, wanted) for wanted in self.languages)
+            uncertain = not lang or any(ambiguous(lang, wanted) for wanted in self.languages)
+            unwanted = not permitted and (complete or not uncertain)
+            duplicate = complete and permitted and not sidecar["forced"] and sidecar["path"] not in outputs
             if unwanted or duplicate:
                 if fingerprint(path) != fp:
                     raise Review("media_changed_during_work")
@@ -758,8 +781,9 @@ class Manager:
                 continue
             tags = stream.get("tags", {})
             lang = language(tags.get("language"), tags.get("title"))
-            permitted = lang in self.languages
-            unwanted = (bool(lang) and lang not in {"en", "pt", "pt-PT"}) or (complete and lang not in {"en", "pt-PT"})
+            permitted = any(matches(lang, wanted) for wanted in self.languages)
+            uncertain = not lang or any(ambiguous(lang, wanted) for wanted in self.languages)
+            unwanted = not permitted and (complete or not uncertain)
             duplicate = complete and permitted and not stream.get("disposition", {}).get("forced")
             if unwanted or duplicate:
                 remove.append(stream["index"])
@@ -841,6 +865,14 @@ class Manager:
         db = self.catalogue.db
         if not self.request.get("dry_run"):
             self.process_rescans()
+            policy = json.dumps(self.languages)
+            previous = db.execute("SELECT value FROM settings WHERE key='required_languages'").fetchone()
+            if not previous or previous[0] != policy:
+                # Keep provenance, but immediately reconsider previously checked
+                # files when the configured target set/order changes.
+                db.execute("UPDATE media SET checked=-1,next_try=0,status='pending' WHERE checked<>0")
+                db.execute("INSERT OR REPLACE INTO settings VALUES('required_languages',?)", (policy,))
+                db.commit()
         paths = set()
         for item in self.request.get("items") or []:
             path = item["Path"]
@@ -858,6 +890,8 @@ class Manager:
                 db.execute("UPDATE media SET item=? WHERE path=?", (json.dumps(item), path))
                 # Lost/edited canonical output immediately re-enters the queue.
                 for lang, sha, data in db.execute("SELECT language,sha,data FROM captions WHERE path=? AND fingerprint=?", (path, fp)):
+                    if lang not in self.languages:
+                        continue
                     output = json.loads(data)["output"]
                     if not Path(output).exists() or digest(output) != sha:
                         db.execute("UPDATE media SET next_try=0,checked=0 WHERE path=?", (path,))
@@ -886,9 +920,14 @@ class Manager:
                 with tempfile.TemporaryDirectory(prefix="ownership-", dir=self.request["temp_dir"]) as directory:
                     work = Path(directory)
                     detail = {lang: self.ensure(item, fp, streams, duration, lang, work) for lang in self.languages}
-                    # Both language searches finish before any generation. EN
-                    # first provides a cheap, timestamp-preserving PT-PT source.
-                    for lang in [l for l in ["en", "pt-PT"] if l in self.languages]:
+                    # All configured searches finish before generation. Prefer
+                    # languages supplied by existing dialogue for free local
+                    # transcription; keep configured order within each group.
+                    def order(lang):
+                        audio = self.audio(streams, lang, language(item.get("OriginalLanguage")))
+                        tags = audio.get("tags", {})
+                        return 0 if matches(language(tags.get("language"), tags.get("title")), lang) else 1
+                    for lang in sorted(self.languages, key=order):
                         detail[lang] = self.fallback(item, fp, streams, duration, lang, detail, work)
                     complete = all("output" in d for d in detail.values())
                     self.cleanup_sidecars(path, fp, complete)
@@ -920,7 +959,7 @@ class Manager:
         spent = 0
         if db.execute("SELECT 1 FROM sqlite_master WHERE name='paid_ledger'").fetchone():
             spent = db.execute("SELECT coalesce(sum(reserved),0) FROM paid_ledger WHERE day=?", (time.strftime("%Y-%m-%d", time.gmtime()),)).fetchone()[0]
-        self.emit(counts=counts, pending_feedback=db.execute("SELECT count(*) FROM feedback WHERE applied=0").fetchone()[0],
+        self.emit(required_languages=self.languages, counts=counts, pending_feedback=db.execute("SELECT count(*) FROM feedback WHERE applied=0").fetchone()[0],
                   pending_rescans=db.execute("SELECT count(*) FROM rescans").fetchone()[0],
                   media=details, paid_reserved_usd_today=round(spent, 4))
 
@@ -942,6 +981,12 @@ def main():
         manager.status()
     elif action == "report":
         feedback = request["feedback"]
+        try:
+            feedback["language"] = normalize(feedback["language"])
+        except ValueError:
+            raise Review("invalid_feedback") from None
+        if feedback["language"] not in manager.languages:
+            raise Review("feedback_language_not_configured")
         manager.emit(**manager.catalogue.report(feedback["path"], feedback["language"], feedback["reason"]))
     else:
         raise Review("unknown_action")

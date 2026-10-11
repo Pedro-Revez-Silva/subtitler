@@ -51,6 +51,9 @@ telemetry:
   release: ""
 
 subtitles:
+  # Managed languages drive acquisition, verification, generation and cleanup.
+  # Use ISO tags: [fr, es, de], [pt-BR], or a regional/script tag such as zh-Hant.
+  # Generic pt accepts any Portuguese variant; pt-PT requires Portugal evidence.
   required_languages:
     - en
     - pt-PT
