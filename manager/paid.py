@@ -67,6 +67,18 @@ class Paid:
         if self.config.get("translation_model") not in {"gpt-4o-mini", "gpt-4o-mini-2024-07-18"}:
             raise PaidUnavailable("translation_model_price_unknown")
         model = "gpt-4o-mini-2024-07-18"
+        output_format = {
+            "type": "json_schema", "name": "subtitle_translation", "strict": True,
+            "schema": {
+                "type": "object", "additionalProperties": False, "required": ["translations"],
+                "properties": {"translations": {
+                    "type": "array", "items": {
+                        "type": "object", "additionalProperties": False, "required": ["id", "text"],
+                        "properties": {"id": {"type": "integer"}, "text": {"type": "string"}},
+                    },
+                }},
+            },
+        }
         texts = []
         for start in range(0, len(cues), 40):
             batch = [{"id": i, "text": c.plaintext} for i, c in enumerate(cues[start:start + 40], start)]
@@ -82,11 +94,15 @@ class Paid:
             if translated is None:
                 # Input tokens cannot exceed UTF-8 bytes; output has an explicit
                 # token ceiling. Add request overhead to the conservative bound.
-                cost = (len(prompt.encode()) + 2000) * 0.15 / 1_000_000 + 6000 * 0.60 / 1_000_000
+                input_bytes = len(prompt.encode()) + len(json.dumps(output_format).encode())
+                cost = (input_bytes + 2000) * 0.15 / 1_000_000 + 6000 * 0.60 / 1_000_000
                 self.reserve(cost, "translate")
                 try:
                     response = self.post("/responses", json={"model": model, "input": prompt,
-                                                             "max_output_tokens": 6000, "store": False}).json()
+                                                             "max_output_tokens": 6000, "store": False,
+                                                             "text": {"format": output_format}}).json()
+                    if response.get("status", "completed") != "completed":
+                        raise ValueError()
                     content = "".join(c.get("text", "") for o in response.get("output", []) for c in o.get("content", [])
                                       if c.get("type") == "output_text")
                     parsed = json.loads(content)["translations"]
