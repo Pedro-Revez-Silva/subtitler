@@ -72,14 +72,15 @@ quarantines the reported track, rejects its source and both input/output hashes,
 and searches for an alternative. Translations derived from a bad source are
 invalidated too. A stale report cannot reject a newly imported movie.
 
-`prune_embedded` and `prune_audio` perform a copy remux of MKV files, retaining
-video, metadata, chapters and attachments. Desired full embedded subtitles are
-removed only once both canonical sidecars exist. Known unwanted languages can
-be removed earlier; desired forced tracks are retained. Audio keeps English,
-PT-PT and the original language from ARR. Unknown audio metadata and ambiguous
-Portuguese audio remain for review, rather than risking the sole original/dub.
-An unwanted dub is also retained and flagged if removing it would leave no
-dialogue audio (or only commentary); replacing that media release belongs to ARR.
+`prune_embedded` performs a copy remux of MKV files, retaining every audio track,
+video, metadata, chapters and attachments. Subtitler manages subtitles only:
+audio is read to select a dialogue reference, check synchronization and provide
+last-resort transcription. It does not remove, obtain or replace audio tracks,
+and audio language preferences do not determine whether subtitle ownership is
+complete. Legacy `prune_audio` settings are ignored.
+Desired full embedded subtitles are removed only once both canonical sidecars
+exist. Known unwanted subtitle languages can be removed earlier; desired forced
+tracks are retained.
 Ambiguous subtitle tracks are quarantined only after both canonical replacements
 exist; until then they remain available for review.
 Other containers remain for review. A verified backup hardlink is made outside
