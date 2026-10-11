@@ -215,6 +215,12 @@ letting the scanner process every missing item it finds in one scan.
 
 ### Important choices
 
+For the persistent [subtitle owner](manager/README.md), `subtitles.required_languages`
+selects every managed language, including provider searches, checks and cleanup.
+It is configurable per installation: `[fr, es, de]` and `[pt-BR]` are valid choices.
+Use `pt-PT` when Portugal Portuguese is required; generic `pt` accepts regional
+variants. Changing the setting requeues previously checked media.
+
 ```yaml
 subtitles:
   required_languages: [en, pt-PT]

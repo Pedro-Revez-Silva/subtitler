@@ -421,12 +421,41 @@ main()
             with patch.object(paid, "post") as post:
                 post.return_value.json.return_value = response
                 self.assertEqual(paid.translate(cues, "pt-PT", ""), ["Português europeu"] * 2)
+                request = post.call_args.kwargs["json"]
+                format = request["text"]["format"]
+                self.assertEqual(format["type"], "json_schema")
+                self.assertTrue(format["strict"])
+                self.assertFalse(format["schema"]["additionalProperties"])
+                cue_schema = format["schema"]["properties"]["translations"]["items"]
+                self.assertEqual(cue_schema["required"], ["id", "text"])
+                self.assertFalse(cue_schema["additionalProperties"])
+                reserved = db.execute("SELECT reserved FROM paid_ledger").fetchone()[0]
+                expected = (len(request["input"].encode()) + len(json.dumps(format).encode()) + 2000) * 0.15 / 1_000_000 + 6000 * 0.60 / 1_000_000
+                self.assertAlmostEqual(reserved, expected)
                 paid.translate(cues, "pt-PT", "")
                 self.assertEqual(post.call_count, 1)
                 self.assertEqual(db.execute("SELECT count(*) FROM paid_ledger").fetchone()[0], 1)
                 response["output"][0]["content"][0]["text"] = '{"translations":[{"id":0,"text":"a"},{"id":0,"text":"b"}]}'
                 with self.assertRaisesRegex(PaidUnavailable, "invalid_paid_translation"):
                     paid.translate(cues, "en", "")
+            db.close()
+
+    def test_translation_does_not_cache_incomplete_or_refused_results(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db = sqlite3.connect(Path(directory) / "db")
+            paid = Paid(db, {"api_key": "unit-test-placeholder", "translation_model": "gpt-4o-mini"}, 1)
+            valid_text = json.dumps({"translations": [{"id": 0, "text": "Português europeu"}]})
+            responses = [
+                {"status": "incomplete", "output": [{"content": [{"type": "output_text", "text": valid_text}]}]},
+                {"status": "completed", "output": [{"content": [{"type": "refusal", "refusal": "Declined"}]}]},
+            ]
+            with patch.object(paid, "post") as post:
+                for response in responses:
+                    post.return_value.json.return_value = response
+                    with self.assertRaisesRegex(PaidUnavailable, "invalid_paid_translation"):
+                        paid.translate(dialogue()[:1], "pt-PT", "")
+            self.assertEqual(db.execute("SELECT count(*) FROM paid_cache").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT count(*) FROM paid_ledger").fetchone()[0], 2)
             db.close()
 
     def test_budget_survives_restart_and_charges_ambiguous_failures(self):
