@@ -818,11 +818,14 @@ class Manager:
                 continue
 
     def scan(self):
-        lock = (self.catalogue.root / "scan.lock").open("a")
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            return self.emit(status="scan_already_running")
+        with (self.catalogue.root / "scan.lock").open("a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return self.emit(status="scan_already_running")
+            self.scan_locked()
+
+    def scan_locked(self):
         db = self.catalogue.db
         if not self.request.get("dry_run"):
             self.process_rescans()
@@ -848,7 +851,9 @@ class Manager:
                         db.execute("UPDATE media SET next_try=0,checked=0 WHERE path=?", (path,))
         db.commit()
         jobs = 0
-        rows = db.execute("SELECT path,fingerprint,item FROM media WHERE next_try<=? ORDER BY checked,path", (time.time(),)).fetchall()
+        rows = db.execute("SELECT path,fingerprint,item FROM media WHERE next_try<=? "
+                          "ORDER BY EXISTS(SELECT 1 FROM feedback WHERE feedback.path=media.path AND applied=0) DESC,checked,path",
+                          (time.time(),)).fetchall()
         for path, fp, raw in rows:
             if path not in paths:
                 continue

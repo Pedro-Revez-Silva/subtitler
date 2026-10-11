@@ -122,6 +122,17 @@ class OwnershipTests(unittest.TestCase):
         with self.assertRaisesRegex(Review, "media_changed"):
             self.manager.catalogue.report(str(self.video), "en", "out_of_sync")
 
+    def test_feedback_is_prioritized_over_the_initial_library_queue(self):
+        self.register()
+        earlier = self.root / "A.mkv"
+        earlier.write_bytes(b"other movie")
+        self.manager.request["items"].append({**self.item, "Path": str(earlier)})
+        self.manager.request["dry_run"] = True
+        self.manager.catalogue.report(str(self.video), "en", "missing")
+        with patch.object(self.manager, "emit") as emit:
+            self.manager.scan()
+        self.assertEqual(emit.call_args_list[0].kwargs["path"], str(self.video))
+
     def test_same_content_is_not_generated_again_after_rejection(self):
         candidate = self.root / "bad.srt"
         dialogue().save(str(candidate), format_="srt")
