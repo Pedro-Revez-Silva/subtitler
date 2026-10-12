@@ -28,18 +28,20 @@ type Config struct {
 // Management selects the persistent, provider-first subtitle owner. Paid API
 // clients are available only behind an explicit, budgeted fallback setting.
 type ManagementConfig struct {
-	Enabled            bool    `yaml:"enabled" json:"enabled"`
-	Python             string  `yaml:"python" json:"python"`
-	Script             string  `yaml:"script" json:"script"`
-	StateDir           string  `yaml:"state_dir" json:"state_dir"`
-	ProvidersFile      string  `yaml:"providers_file" json:"providers_file"`
-	QuarantineDir      string  `yaml:"quarantine_dir" json:"quarantine_dir"`
-	PruneEmbedded      bool    `yaml:"prune_embedded" json:"prune_embedded"`
-	LocalTranscription bool    `yaml:"local_transcription" json:"local_transcription"`
-	VerifyWords        bool    `yaml:"verify_words" json:"verify_words"`
-	MinFreeGB          int     `yaml:"min_free_gb" json:"min_free_gb"`
-	PaidFallback       bool    `yaml:"paid_fallback" json:"paid_fallback"`
-	PaidDailyUSD       float64 `yaml:"paid_daily_usd" json:"paid_daily_usd"`
+	Enabled                   bool    `yaml:"enabled" json:"enabled"`
+	Python                    string  `yaml:"python" json:"python"`
+	Script                    string  `yaml:"script" json:"script"`
+	StateDir                  string  `yaml:"state_dir" json:"state_dir"`
+	ProvidersFile             string  `yaml:"providers_file" json:"providers_file"`
+	QuarantineDir             string  `yaml:"quarantine_dir" json:"quarantine_dir"`
+	PruneEmbedded             bool    `yaml:"prune_embedded" json:"prune_embedded"`
+	LocalTranscription        bool    `yaml:"local_transcription" json:"local_transcription"`
+	VerifyWords               bool    `yaml:"verify_words" json:"verify_words"`
+	VerificationModel         string  `yaml:"verification_model" json:"verification_model"`
+	VerificationFallbackModel string  `yaml:"verification_fallback_model" json:"verification_fallback_model"`
+	MinFreeGB                 int     `yaml:"min_free_gb" json:"min_free_gb"`
+	PaidFallback              bool    `yaml:"paid_fallback" json:"paid_fallback"`
+	PaidDailyUSD              float64 `yaml:"paid_daily_usd" json:"paid_daily_usd"`
 }
 
 type ServiceConfig struct {
@@ -150,6 +152,12 @@ func Default() Config {
 }
 
 func (c *Config) applyDefaults() {
+	if c.Management.VerificationModel == "" {
+		c.Management.VerificationModel = "base"
+	}
+	if c.Management.VerificationFallbackModel == "" {
+		c.Management.VerificationFallbackModel = "small"
+	}
 	if c.StatePath == "" {
 		c.StatePath = "subtitler-state.json"
 	}
@@ -323,6 +331,14 @@ func (c Config) validate() error {
 	}
 	if c.Management.MinFreeGB < 0 {
 		return errors.New("management.min_free_gb cannot be negative")
+	}
+	for _, model := range []string{c.Management.VerificationModel, c.Management.VerificationFallbackModel} {
+		if model != "base" && model != "small" && model != "none" {
+			return errors.New("management verification models must be base, small, or none")
+		}
+	}
+	if c.Management.VerificationModel == "none" {
+		return errors.New("management.verification_model cannot be none")
 	}
 	if c.Management.PaidFallback && c.Management.PaidDailyUSD <= 0 {
 		return errors.New("management.paid_daily_usd must be positive when paid fallback is enabled")

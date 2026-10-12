@@ -16,6 +16,10 @@ func TestManagementConfiguration(t *testing.T) {
 		{"management:\n  enabled: true\n", false},
 		{"management:\n  min_free_gb: -1\n", false},
 		{"management:\n  paid_fallback: true\n", false},
+		{"management:\n  verification_model: large\n", false},
+		{"management:\n  verification_model: none\n", false},
+		{"management:\n  verification_fallback_model: invalid\n", false},
+		{"management:\n  enabled: true\n  state_dir: /data/owner\n  quarantine_dir: /media/archive\n  verify_words: true\n  verification_model: small\n  verification_fallback_model: none\n", true},
 		{"management:\n  enabled: true\n  state_dir: /data/owner\n  quarantine_dir: /media/archive\n  verify_words: true\n", true},
 	} {
 		path := filepath.Join(t.TempDir(), "config.yaml")

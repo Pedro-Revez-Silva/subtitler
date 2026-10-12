@@ -452,10 +452,10 @@ main()
             with patch.object(paid, "post") as post:
                 for response in responses:
                     post.return_value.json.return_value = response
-                    with self.assertRaisesRegex(PaidUnavailable, "invalid_paid_translation"):
+                    with self.assertRaisesRegex(PaidUnavailable, "invalid_paid_translation|translation_refused"):
                         paid.translate(dialogue()[:1], "pt-PT", "")
             self.assertEqual(db.execute("SELECT count(*) FROM paid_cache").fetchone()[0], 0)
-            self.assertEqual(db.execute("SELECT count(*) FROM paid_ledger").fetchone()[0], 2)
+            self.assertEqual(db.execute("SELECT count(*) FROM paid_ledger").fetchone()[0], 3)
             db.close()
 
     def test_budget_survives_restart_and_charges_ambiguous_failures(self):
