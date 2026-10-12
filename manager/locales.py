@@ -40,6 +40,7 @@ def language(value, title=""):
     """Read tolerant media metadata without inventing missing locale evidence."""
     from babelfish import Language
     raw = str(value or "").strip().replace("_", "-")
+    title = str(title or "")
     if raw.lower() in {"und", "mul", "zxx"}:
         return ""
     if raw.lower() == "pob":

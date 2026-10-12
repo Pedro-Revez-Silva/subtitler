@@ -5,6 +5,7 @@ The Go application supplies ARR inventory via stdin. Providers and local tools
 are deliberately lazy imports, so status/report never download models or media.
 """
 import contextlib
+from collections import Counter
 import difflib
 import errno
 import fcntl
@@ -23,6 +24,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 import unicodedata
 import uuid
 from locales import ambiguous, base_language, language, matches, normalize, text_language_supported
@@ -42,6 +44,61 @@ def non_dialogue_audio(stream):
 
 class Review(Exception):
     """A stable, non-secret reason that can be recorded in the catalogue."""
+    def __init__(self, reason, diagnostic=None):
+        super().__init__(reason)
+        self.diagnostic = diagnostic or {}
+
+
+def diagnostic(error, stage):
+    result = {"stage": stage, "exception": type(error).__name__}
+    if isinstance(error, Review):
+        result.update(error.diagnostic)
+    else:
+        # Exception messages, local variables and command arguments can contain
+        # provider credentials. Retain only code locations and exception types.
+        result["frames"] = [{"file": Path(t.filename).name, "function": t.name, "line": t.lineno}
+                            for t in traceback.extract_tb(error.__traceback__)[-4:]]
+    return result
+
+
+def media_duration(streams, format_duration):
+    values = []
+    for stream in streams:
+        if stream.get("codec_type") not in {"audio", "video"} or stream.get("disposition", {}).get("attached_pic"):
+            continue
+        raw = stream.get("tags", {}).get("DURATION", "")
+        try:
+            hours, minutes, seconds = raw.split(":")
+            values.append(int(hours) * 3600 + int(minutes) * 60 + float(seconds))
+        except (ValueError, AttributeError):
+            try: values.append(float(stream["duration"]))
+            except (ValueError, KeyError, TypeError): pass
+    return max(values) if values else float(format_duration)
+
+
+def stream_signature(stream):
+    tags, flags = stream.get("tags", {}), stream.get("disposition", {})
+    return (stream["codec_type"], stream["codec_name"], language(tags.get("language"), tags.get("title")), tags.get("title", ""),
+            tags.get("filename", ""), tags.get("mimetype", ""),
+            stream.get("channels"), stream.get("sample_rate"), stream.get("width"), stream.get("height"),
+            bool(flags.get("default")), bool(flags.get("forced")), bool(flags.get("attached_pic")))
+
+
+def recovery_action(detail, status):
+    if status == "managed": return "periodic_recheck"
+    if status == "managed_cleanup_pending": return "retry_subtitle_cleanup"
+    failures = set()
+    for value in detail.values():
+        if not isinstance(value, dict): continue
+        failures.update(value.get("failures", []))
+        failures.update(str(value[k]) for k in ("translation_failure", "paid_failure", "error") if k in value)
+        cause = value.get("translation_diagnostic", {}).get("cause") or value.get("paid_diagnostic", {}).get("cause")
+        if cause in {"authentication", "quota", "access_denied"}: return "provider_configuration_required"
+    if "daily_paid_budget_exhausted" in failures: return "wait_for_daily_budget"
+    if "candidate_verification_pending" in failures: return "try_other_candidates"
+    if "translation_call_limit" in failures or "invalid_paid_translation" in failures: return "resume_translation"
+    if "translation_refused" in failures: return "translation_requires_review"
+    return "retry_with_diagnostics"
 
 
 def backing_path(path):
@@ -162,10 +219,22 @@ def text_alignment(cues, checks):
             "framerate_scale": 1 + slope, "anchor_residual_seconds": round(residual, 3), "content_proof": "three_samples"}
 
 
-def run(command, timeout=7200):
-    result = subprocess.run(command, capture_output=True, timeout=timeout, check=False)
-    if result.returncode:
-        raise Review("media_tool_failed")
+def run(command, timeout=7200, accepted_codes=(0,)):
+    tool = Path(command[0]).name
+    try:
+        result = subprocess.run(command, capture_output=True, timeout=timeout, check=False)
+    except subprocess.TimeoutExpired:
+        raise Review("media_tool_timeout", {"tool": tool, "timeout_seconds": timeout}) from None
+    if result.returncode not in accepted_codes:
+        stderr = result.stderr.decode(errors="replace").lower()
+        category = "tool_error"
+        for needles, name in [(["no space left"], "disk_full"), (["permission denied"], "permission"),
+                              (["timestamp", "non monoton", "unknown time"], "timestamps"),
+                              (["not supported", "unsupported", "could not find codec"], "unsupported_stream")]:
+            if any(needle in stderr for needle in needles):
+                category = name
+                break
+        raise Review("media_tool_failed", {"tool": tool, "exit_code": result.returncode, "category": category})
     return result.stdout
 
 
@@ -186,6 +255,8 @@ class Catalogue:
                 language TEXT, sha TEXT, reason TEXT, applied INTEGER DEFAULT 0);
             CREATE TABLE IF NOT EXISTS rescans(path TEXT PRIMARY KEY, item TEXT);
             CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
+            CREATE TABLE IF NOT EXISTS candidate_reviews(path TEXT, fingerprint TEXT, language TEXT, sha TEXT,
+                source TEXT, reason TEXT, retry_after REAL, PRIMARY KEY(path,fingerprint,language,sha,source));
         """)
         self.db.commit()
 
@@ -201,7 +272,20 @@ class Catalogue:
 
     def reject(self, path, fp, lang, sha, source, reason):
         self.db.execute("INSERT OR IGNORE INTO rejected VALUES(?,?,?,?,?,?)", (path, fp, lang, sha, source, reason))
+        self.db.execute("DELETE FROM candidate_reviews WHERE path=? AND fingerprint=? AND language=? AND "
+                        "((sha<>'' AND sha=?) OR (source<>'' AND source=?))", (path, fp, lang, sha, source))
         self.db.commit()
+
+    def defer(self, path, fp, lang, sha, source, reason):
+        self.db.execute("INSERT OR REPLACE INTO candidate_reviews VALUES(?,?,?,?,?,?,?)",
+                        (path, fp, lang, sha, source, reason, time.time() + 6 * 3600))
+        self.db.commit()
+
+    def deferred(self, path, fp, lang, sha="", source=""):
+        condition, identity = ("source=?", source) if source else ("source='' AND sha=?", sha)
+        return self.db.execute("SELECT 1 FROM candidate_reviews WHERE path=? AND fingerprint=? AND language=? AND "
+                               "retry_after>? AND " + condition,
+                               (path, fp, lang, time.time(), identity)).fetchone() is not None
 
     def record(self, path, fp, lang, sha, data):
         self.db.execute("INSERT OR REPLACE INTO captions VALUES(?,?,?,?,?)", (path, fp, lang, sha, json.dumps(data)))
@@ -255,6 +339,7 @@ class Manager:
         self.quarantine = Path(self.cfg["quarantine_dir"])
         self.quarantine.mkdir(parents=True, exist_ok=True)
         self.model = None
+        self.models = {}
         self.word_samples = {}
 
     def emit(self, **record):
@@ -262,7 +347,7 @@ class Manager:
 
     def probe(self, path):
         result = json.loads(run([self.ffprobe, "-v", "error", "-show_streams", "-show_format", "-of", "json", path], 120))
-        duration = float(result["format"]["duration"])
+        duration = media_duration(result["streams"], result["format"]["duration"])
         if duration <= 0:
             raise Review("unknown_duration")
         return result["streams"], duration
@@ -274,6 +359,12 @@ class Manager:
             for stream in audios:
                 tags = stream.get("tags", {})
                 if wanted and matches(language(tags.get("language"), tags.get("title")), wanted):
+                    return stream
+            for stream in audios:
+                tags = stream.get("tags", {})
+                if wanted and ambiguous(language(tags.get("language"), tags.get("title")), wanted):
+                    # A generic same-language track can verify words. Its tag
+                    # still cannot establish the locale for generated subtitles.
                     return stream
         if not audios:
             raise Review("no_dialogue_audio")
@@ -343,6 +434,7 @@ class Manager:
 
     def sync(self, reference, candidate, output):
         from ffsubsync.ffsubsync import make_parser, run as synchronize
+        subtitle_reference = Path(reference).suffix.lower() == ".srt"
         speech_cache = Path(reference).with_suffix(".npz")
         selected_reference = speech_cache if speech_cache.exists() else reference
         arguments = [str(selected_reference), "-i", str(candidate), "-o", str(output),
@@ -350,22 +442,25 @@ class Manager:
                                         "--quality-max-offset-seconds", "45", "--max-offset-seconds", "60",
                                         "--max-framerate-deviation", "0.05",
                                         "--ffmpeg-path", self.ffmpeg]
-        if not speech_cache.exists():
+        if not speech_cache.exists() and not subtitle_reference:
             arguments.append("--serialize-speech")
         args = make_parser().parse_args(arguments)
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             result = synchronize(args)
         if not result.get("sync_was_successful") or not output.exists():
-            raise Review("timing_alignment_inconclusive")
-        return {"method": "ffsubsync_vad", "offset_seconds": result["offset_seconds"],
+            raise Review("timing_alignment_inconclusive", {"method": "ffsubsync_subtitle_reference" if subtitle_reference else "ffsubsync_vad",
+                         **{k: result[k] for k in ("offset_seconds", "framerate_scale_factor", "score")
+                            if type(result.get(k)) in {int, float}}})
+        return {"method": "ffsubsync_subtitle_reference" if subtitle_reference else "ffsubsync_vad", "offset_seconds": result["offset_seconds"],
                 "framerate_scale": result["framerate_scale_factor"], "content_proof": False}
 
-    def speech_model(self):
-        if self.model is None:
+    def speech_model(self, name=None):
+        name = name or self.cfg.get("verification_model") or "base"
+        if name not in self.models:
             from faster_whisper import WhisperModel
-            self.model = WhisperModel("base", device="cpu", compute_type="int8", cpu_threads=4,
-                                     download_root=str(self.catalogue.root / "models"))
-        return self.model
+            self.models[name] = WhisperModel(name, device="cpu", compute_type="int8", cpu_threads=4,
+                                            download_root=str(self.catalogue.root / "models"))
+        return self.models[name]
 
     def verify_words(self, reference, cues, lang, work):
         # Only literal word comparisons in the SAME language are evidence. A
@@ -373,24 +468,34 @@ class Manager:
         starts = [c.start / 1000 for c in cues if len(words(c.text)) >= 4]
         if len(starts) < 12:
             return {"status": "inconclusive", "reason": "too_little_dialogue"}
-        key = (str(reference), base_language(lang))
-        if key not in self.word_samples:
-            samples = []
-            for fraction in [0.15, 0.5, 0.85]:
-                start = max(0, starts[int((len(starts) - 1) * fraction)] - 3)
-                sample = work / f"sample-{fraction}.wav"
-                run([self.ffmpeg, "-v", "error", "-y", "-ss", str(start), "-i", str(reference),
-                     "-t", "60", "-ar", "16000", "-ac", "1", str(sample)], 120)
-                segments, info = self.speech_model().transcribe(str(sample), language=base_language(lang),
-                                                              word_timestamps=True, vad_filter=True, beam_size=3)
-                recognized = [(w.word, w.start + start, w.end + start) for s in segments for w in (s.words or [])]
-                samples.append((start, recognized))
-            self.word_samples[key] = samples
-        metrics = [word_metrics(cues, recognized, start, start + 60) for start, recognized in self.word_samples[key]]
-        good = sum(m["status"] == "verified" for m in metrics)
-        status = "mismatch" if any(m["status"] == "mismatch" for m in metrics) else ("verified_samples" if good >= 2 else "inconclusive")
-        return {"status": status, "samples": metrics,
-                "method": "local_whisper_base_int8", "scope": "three_60_second_samples"}
+        primary = self.cfg.get("verification_model") or "base"
+        fallback = self.cfg.get("verification_fallback_model") or "small"
+        attempts = []
+        for name in dict.fromkeys([primary, fallback]):
+            if name == "none": continue
+            seconds = 60 if name == primary else 90
+            key = (str(reference), base_language(lang), name)
+            if key not in self.word_samples:
+                samples = []
+                self.emit(stage="verifying_dialogue", language=lang, model=name)
+                for fraction in [0.15, 0.5, 0.85]:
+                    start = max(0, starts[int((len(starts) - 1) * fraction)] - 3)
+                    sample = work / f"sample-{name}-{fraction}.wav"
+                    run([self.ffmpeg, "-v", "error", "-y", "-ss", str(start), "-i", str(reference),
+                         "-t", str(seconds), "-ar", "16000", "-ac", "1", str(sample)], 120)
+                    segments, info = self.speech_model(name).transcribe(str(sample), language=base_language(lang),
+                                                                      word_timestamps=True, vad_filter=True, beam_size=5)
+                    recognized = [(w.word, w.start + start, w.end + start) for s in segments for w in (s.words or [])]
+                    samples.append((start, recognized))
+                self.word_samples[key] = samples
+            metrics = [word_metrics(cues, recognized, start, start + seconds) for start, recognized in self.word_samples[key]]
+            good = sum(m["status"] == "verified" for m in metrics)
+            status = "mismatch" if any(m["status"] == "mismatch" for m in metrics) else ("verified_samples" if good >= 2 else "inconclusive")
+            attempts.append({"model": name, "status": status})
+            result = {"status": status, "samples": metrics, "attempts": attempts,
+                      "method": f"local_whisper_{name}_int8", "scope": f"three_{seconds}_second_samples"}
+            if status != "inconclusive": return result
+        return result
 
     def local_candidates(self, item, streams, lang, work):
         path = item["Path"]
@@ -449,8 +554,10 @@ class Manager:
     def provider_candidates(self, item, lang, work):
         from providers import candidates
         self.provider_health = {}
+        fp = fingerprint(item["Path"])
         yield from candidates(item, lang, work, self.cfg.get("providers_file"),
-                              lambda sha, source: self.catalogue.rejected(item["Path"], fingerprint(item["Path"]), lang, sha, source),
+                              lambda sha, source: (self.catalogue.rejected(item["Path"], fp, lang, sha, source)
+                                                   or self.catalogue.deferred(item["Path"], fp, lang, sha, source)),
                               self.provider_health)
 
     def transcribe(self, reference, lang, work, duration, source_language=None, translate=False):
@@ -524,7 +631,17 @@ class Manager:
                 if timing:
                     cues.save(str(aligned), format_="srt")
             if timing is None:
-                timing = self.sync(reference, normalized, aligned)
+                try:
+                    timing = self.sync(reference, normalized, aligned)
+                except Review as error:
+                    if str(error) != "timing_alignment_inconclusive" or same_language:
+                        raise
+                    source = next((self.catalogue.caption(path, fp, wanted) for wanted in self.languages
+                                   if wanted != lang and self.catalogue.caption(path, fp, wanted)), None)
+                    if not source or not Path(source[1]["output"]).is_file() or digest(source[1]["output"]) != source[0]:
+                        raise
+                    timing = self.sync(source[1]["output"], normalized, aligned)
+                    timing["reference_sha"] = source[0]
             cues = self.load(aligned, duration)
             if same_language and self.cfg.get("verify_words"):
                 try:
@@ -536,9 +653,9 @@ class Manager:
         structure = validate(cues, duration)
         if same_language and self.cfg.get("verify_words"):
             if content["status"] == "mismatch":
-                raise Review("words_do_not_match_audio_timing")
+                raise Review("words_do_not_match_audio_timing", {"verification": content})
             if content["status"] != "verified_samples":
-                raise Review("word_verification_inconclusive")
+                raise Review("word_verification_inconclusive", {"verification": content})
         elif not same_language and provenance["source"] == "sidecar" and not provenance.get("owned_before"):
             # Unknown local translated tracks require a provider edition match,
             # or a human judgement; VAD alone cannot prove which film they are.
@@ -583,7 +700,9 @@ class Manager:
         saved = self.catalogue.caption(path, fp, lang)
         if (saved and not (saved[1].get("internal_source") and lang in self.languages)
                 and Path(saved[1]["output"]).exists() and digest(saved[1]["output"]) == saved[0]):
-            return saved[1]
+            selected = self.audio(streams, lang, language(item.get("OriginalLanguage"))) if streams else None
+            if selected is None or "audio_stream" not in saved[1] or selected["index"] == saved[1]["audio_stream"]:
+                return saved[1]
         self.emit(path=path, language=lang, stage="checking_existing_subtitles")
         original = language(item.get("OriginalLanguage"))
         audio = self.audio(streams, lang, original)
@@ -592,26 +711,43 @@ class Manager:
             run([self.ffmpeg, "-v", "error", "-y", "-i", path, "-map", f"0:{audio['index']}",
                  "-vn", "-ac", "1", "-ar", "16000", str(reference)])
         failures = []
+        diagnostics = []
         for group in [self.local_candidates, self.provider_candidates]:
             if group == self.provider_candidates:
                 self.emit(path=path, language=lang, stage="searching_providers")
             try:
                 for candidate, provenance in group(item, streams, lang, work) if group == self.local_candidates else group(item, lang, work):
+                    candidate_sha = digest(candidate)
+                    candidate_source = provenance.get("source_id") or provenance.get("source", "local") + ":" + candidate_sha
+                    if self.catalogue.deferred(path, fp, lang, candidate_sha, candidate_source):
+                        failures.append("candidate_verification_pending")
+                        continue
                     if saved and provenance.get("original_path") == saved[1]["output"]:
                         provenance["owned_before"] = True
                     try:
                         return self.publish(item, fp, lang, candidate, provenance, reference, audio, duration, work)
                     except Review as error:
                         failures.append(str(error))
+                        diagnostics.append({"reason": str(error), **diagnostic(error, "candidate_verification")})
+                        if str(error) in {"word_verification_inconclusive", "timing_alignment_inconclusive", "translated_sidecar_identity_unverified"}:
+                            self.catalogue.defer(path, fp, lang, candidate_sha, candidate_source, str(error))
                         if str(error) not in {"media_changed_during_work", "local_word_verifier_unavailable", "subtitle_language_detector_unavailable", "word_verification_inconclusive", "timing_alignment_inconclusive", "translated_sidecar_identity_unverified", "previously_rejected"}:
                             self.catalogue.reject(path, fp, lang, digest(candidate), provenance.get("source_id", ""), str(error))
+                    except Exception as error:
+                        failures.append("candidate_verifier_failed")
+                        diagnostics.append(diagnostic(error, "candidate_verification"))
             except Review as error:
                 failures.append(str(error))
-            except Exception:
+                diagnostics.append({"reason": str(error), **diagnostic(error, "candidate_search")})
+            except Exception as error:
                 failures.append("provider_unavailable")
+                diagnostics.append(diagnostic(error, "candidate_search"))
+        if self.catalogue.db.execute("SELECT 1 FROM candidate_reviews WHERE path=? AND fingerprint=? AND language=?",
+                                     (path, fp, lang)).fetchone():
+            failures.append("candidate_verification_pending")
         tags = audio.get("tags", {})
         return {"status": "missing_or_unverified", "failures": sorted(set(failures)),
-                "providers": getattr(self, "provider_health", {}), "generation_attempted": False}
+                "providers": getattr(self, "provider_health", {}), "generation_attempted": False, "diagnostics": diagnostics[-10:]}
 
     def fallback(self, item, fp, streams, duration, lang, detail, work):
         from paid import Paid, PaidUnavailable
@@ -623,7 +759,7 @@ class Manager:
         unavailable = {"local_word_verifier_unavailable", "subtitle_language_detector_unavailable"}.intersection(current.get("failures", []))
         if unavailable:
             return {**current, "generation_deferred": sorted(unavailable)[0]}
-        uncertain = {"word_verification_inconclusive", "timing_alignment_inconclusive", "translated_sidecar_identity_unverified"}
+        uncertain = {"word_verification_inconclusive", "timing_alignment_inconclusive", "translated_sidecar_identity_unverified", "candidate_verification_pending", "candidate_verifier_failed"}
         if uncertain.intersection(current.get("failures", [])):
             return {**current, "generation_deferred": "existing_candidate_needs_review"}
         health = current.get("providers", {})
@@ -682,7 +818,7 @@ class Manager:
                                   "language_evidence": "explicit_translation_target:" + lang}
                     return self.publish(item, fp, lang, output, provenance, reference, audio, duration, work)
                 except PaidUnavailable as error:
-                    current = {**current, "translation_failure": str(error)}
+                    current = {**current, "translation_failure": str(error), "translation_diagnostic": error.diagnostic}
                     # Budget or provider problems must not trigger a more
                     # expensive transcription of the same known subtitle.
                     return current
@@ -718,7 +854,7 @@ class Manager:
             return self.publish(item, fp, lang, output, {"source": "paid_transcription", "source_id": "paid:whisper-1:" + lang},
                                 reference, audio, duration, work)
         except (PaidUnavailable, Review) as error:
-            return {**current, "paid_failure": str(error), "generation_attempted": True}
+            return {**current, "paid_failure": str(error), "paid_diagnostic": error.diagnostic, "generation_attempted": True}
 
     def cleanup_sidecars(self, path, fp, complete):
         outputs = {canonical(path, wanted) for wanted in self.languages}
@@ -804,16 +940,29 @@ class Manager:
             if fingerprint(path) != fp:
                 raise Review("media_changed_during_work")
             backup = self.backup_link(path, fp, backup)
-            command = [self.ffmpeg, "-v", "error", "-y", "-i", path, "-map", "0"]
-            for index in remove:
-                command += ["-map", f"-0:{index}"]
-            command += ["-map_metadata", "0", "-map_chapters", "0", "-c", "copy", "-f", "matroska", str(staged)]
-            run(command)
+            mkvmerge = shutil.which("mkvmerge")
+            if mkvmerge:
+                inventory = json.loads(run([mkvmerge, "-J", path]))
+                tracks = [t for t in inventory["tracks"] if t["type"] == "subtitles"]
+                subtitles = [s for s in streams if s["codec_type"] == "subtitle"]
+                if len(tracks) != len(subtitles):
+                    raise Review("remux_track_mapping_inconclusive")
+                ids = [str(t["id"]) for t, s in zip(tracks, subtitles) if s["index"] in remove]
+                selection = ["--no-subtitles"] if len(ids) == len(tracks) else ["--subtitle-tracks", "!" + ",".join(ids)]
+                run([mkvmerge, "-o", str(staged), *selection, path], accepted_codes=(0, 1))
+            else:
+                command = [self.ffmpeg, "-v", "error", "-y", "-i", path, "-map", "0"]
+                for index in remove:
+                    command += ["-map", f"-0:{index}"]
+                command += ["-map_metadata", "0", "-map_chapters", "0", "-c", "copy", "-f", "matroska", str(staged)]
+                run(command)
             after, new_duration = self.probe(str(staged))
-            expected = [(s["codec_type"], s["codec_name"]) for s in streams if s["index"] not in remove]
-            actual = [(s["codec_type"], s["codec_name"]) for s in after]
-            if expected != actual or abs(new_duration - duration) > 1:
-                raise Review("remux_validation_failed")
+            expected = Counter(stream_signature(s) for s in streams if s["index"] not in remove)
+            actual = Counter(stream_signature(s) for s in after)
+            if expected != actual:
+                raise Review("remux_validation_failed", {"cause": "stream_metadata_changed"})
+            if abs(new_duration - duration) > 1:
+                raise Review("remux_validation_failed", {"cause": "media_duration_changed", "difference_seconds": round(new_duration - duration, 3)})
             if fingerprint(path) != fp:
                 raise Review("media_changed_during_work")
             os.chmod(staged, Path(path).stat().st_mode & 0o777)
@@ -826,6 +975,7 @@ class Manager:
             new_fp = fingerprint(path)
             self.catalogue.db.execute("UPDATE captions SET fingerprint=? WHERE path=? AND fingerprint=?", (new_fp, path, fp))
             self.catalogue.db.execute("UPDATE rejected SET fingerprint=? WHERE path=? AND fingerprint=?", (new_fp, path, fp))
+            self.catalogue.db.execute("UPDATE candidate_reviews SET fingerprint=? WHERE path=? AND fingerprint=?", (new_fp, path, fp))
             self.catalogue.db.commit()
             return new_fp, {"status": "remuxed", "removed_streams": remove, "backup": str(backup)}
         finally:
@@ -873,6 +1023,13 @@ class Manager:
                 db.execute("UPDATE media SET checked=-1,next_try=0,status='pending' WHERE checked<>0")
                 db.execute("INSERT OR REPLACE INTO settings VALUES('required_languages',?)", (policy,))
                 db.commit()
+            revision = db.execute("SELECT value FROM settings WHERE key='recovery_revision'").fetchone()
+            if not revision or revision[0] != "1":
+                # Upgrade failures once without discarding their accepted tracks,
+                # provider history, feedback or paid translation cache.
+                db.execute("UPDATE media SET checked=-1,next_try=0 WHERE status IN ('needs_attention','managed_cleanup_pending')")
+                db.execute("INSERT OR REPLACE INTO settings VALUES('recovery_revision','1')")
+                db.commit()
         paths = set()
         for item in self.request.get("items") or []:
             path = item["Path"]
@@ -897,10 +1054,18 @@ class Manager:
                         db.execute("UPDATE media SET next_try=0,checked=0 WHERE path=?", (path,))
         db.commit()
         jobs = 0
-        rows = db.execute("SELECT path,fingerprint,item FROM media WHERE next_try<=? "
+        rows = db.execute("SELECT path,fingerprint,item,detail,status,checked FROM media WHERE next_try<=? "
                           "ORDER BY EXISTS(SELECT 1 FROM feedback WHERE feedback.path=media.path AND applied=0) DESC,checked,path",
                           (time.time(),)).fetchall()
-        for path, fp, raw in rows:
+        rows = [r for r in rows if r[0] in paths]
+        # Reserve one slot for a due retry, even while thousands of untouched
+        # files remain. Explicit feedback and upgrade retries keep priority.
+        retry = next((r for r in rows if r[4] in {"needs_attention", "managed_cleanup_pending"} and r[5] > 0), None)
+        if retry and not any(r[5] < 0 for r in rows):
+            index = next((i for i, r in enumerate(rows) if not db.execute("SELECT 1 FROM feedback WHERE path=? AND applied=0", (r[0],)).fetchone()), len(rows))
+            rows.remove(retry)
+            rows.insert(min(index, len(rows)), retry)
+        for path, fp, raw, previous_detail, previous_status, checked in rows:
             if path not in paths:
                 continue
             if self.request.get("max_jobs", 0) > 0 and jobs >= self.request["max_jobs"]:
@@ -910,16 +1075,26 @@ class Manager:
                 self.emit(path=path, status="planned", languages=self.languages, paid_calls=0)
                 jobs += 1
                 continue
-            if item.get("Source") != "manual" and time.time() - Path(path).stat().st_mtime < 300:
+            try:
+                if item.get("Source") != "manual" and time.time() - Path(path).stat().st_mtime < 300:
+                    continue
+            except FileNotFoundError:
                 continue
             jobs += 1
             status, detail, new_fp = "needs_attention", {}, fp
+            stage = "probe"
             try:
                 self.feedback(path, fp)
                 streams, duration = self.probe(path)
                 with tempfile.TemporaryDirectory(prefix="ownership-", dir=self.request["temp_dir"]) as directory:
                     work = Path(directory)
-                    detail = {lang: self.ensure(item, fp, streams, duration, lang, work) for lang in self.languages}
+                    for lang in self.languages:
+                        stage = "acquire:" + lang
+                        try:
+                            detail[lang] = self.ensure(item, fp, streams, duration, lang, work)
+                        except Exception as error:
+                            detail[lang] = {"status": "missing_or_unverified", "error": str(error) if isinstance(error, Review) else "local_engine_failed",
+                                            "diagnostic": diagnostic(error, stage)}
                     # All configured searches finish before generation. Prefer
                     # languages supplied by existing dialogue for free local
                     # transcription; keep configured order within each group.
@@ -928,20 +1103,41 @@ class Manager:
                         tags = audio.get("tags", {})
                         return 0 if matches(language(tags.get("language"), tags.get("title")), lang) else 1
                     for lang in sorted(self.languages, key=order):
-                        detail[lang] = self.fallback(item, fp, streams, duration, lang, detail, work)
+                        stage = "generate:" + lang
+                        try:
+                            detail[lang] = self.fallback(item, fp, streams, duration, lang, detail, work)
+                        except Exception as error:
+                            detail[lang].update(error=str(error) if isinstance(error, Review) else "local_engine_failed", diagnostic=diagnostic(error, stage))
                     complete = all("output" in d for d in detail.values())
+                    stage = "sidecar_cleanup"
                     self.cleanup_sidecars(path, fp, complete)
-                    new_fp, pruning = self.prune(item, fp, streams, duration, complete)
+                    stage = "embedded_cleanup"
+                    try:
+                        new_fp, pruning = self.prune(item, fp, streams, duration, complete)
+                    except Exception as error:
+                        pruning = {"status": "retry_pending", "reason": str(error) if isinstance(error, Review) else "local_engine_failed",
+                                   "diagnostic": diagnostic(error, stage)}
                     detail["track_policy"] = pruning
-                    status = "managed" if complete else "needs_attention"
+                    cleaned = pruning["status"] in {"disabled", "no_change", "remuxed"}
+                    status = ("managed" if cleaned else "managed_cleanup_pending") if complete else "needs_attention"
             except Review as error:
                 detail["error"] = str(error)
-            except Exception:
+                detail["diagnostic"] = diagnostic(error, stage)
+            except Exception as error:
                 detail["error"] = "local_engine_failed"
+                detail["diagnostic"] = diagnostic(error, stage)
             # Never persist a stale success across a concurrent Radarr import.
             if Path(path).exists() and fingerprint(path) == new_fp:
                 pending = db.execute("SELECT 1 FROM feedback WHERE path=? AND applied=0", (path,)).fetchone()
-                delay = 0 if pending else (7 * 86400 if status == "managed" else max(3600, self.request.get("retry_seconds", 86400)))
+                attempt = 0 if status == "managed" else json.loads(previous_detail).get("recovery", {}).get("attempt", 0) + 1
+                maximum = max(3600, self.request.get("retry_seconds", 86400))
+                delay = 0 if pending else (7 * 86400 if status == "managed" else min(maximum, 3600 * 2 ** min(attempt - 1, 8)))
+                action = recovery_action(detail, status)
+                if not pending and action == "wait_for_daily_budget":
+                    delay = max(delay, 86400 - time.time() % 86400 + 60)
+                if not pending and action in {"provider_configuration_required", "translation_requires_review"}:
+                    delay = max(delay, 86400)
+                detail["recovery"] = {"attempt": attempt, "retry_in_seconds": delay, "action": action}
                 db.execute("UPDATE media SET fingerprint=?,checked=?,next_try=?,status=?,detail=? WHERE path=?",
                            (new_fp, time.time(), time.time() + delay, status, json.dumps(detail), path))
                 db.commit()

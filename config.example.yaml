@@ -14,6 +14,9 @@ management:
   providers_file: /data/providers.json
   quarantine_dir: /media/agent-backups/subtitler
   verify_words: true
+  verification_model: base
+  # A stronger local check for inconclusive samples; 'none' disables escalation.
+  verification_fallback_model: small
   local_transcription: true
   prune_embedded: true
   min_free_gb: 50
