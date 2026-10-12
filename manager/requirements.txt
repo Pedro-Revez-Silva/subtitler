@@ -2,7 +2,7 @@ subliminal==2.7.1
 ffsubsync==0.5.1
 faster-whisper==1.2.1
 # PyAV 19 removed metadata_errors, still used by faster-whisper 1.2.1.
-av==16.1.0
+av==19.0.1
 PyYAML==6.0.3
 Pillow==12.3.0
 langdetect==1.0.9
