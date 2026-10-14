@@ -106,7 +106,9 @@ the library before replacing its media path. Seeding hardlinks keep their origin
 bytes. This consumes additional storage for remuxed media; the free-space floor
 is enforced. MergerFS backups use the source's physical branch when pool link
 policies reject a cross-directory link; mount each branch at its host path in
-Docker. The pool's mount settings are untouched. Backups are not automatically deleted.
+Docker. The pool's mount settings are untouched. Backups are not automatically deleted. Copy remuxes are serialized per physical
+disk across both queues, keeping the free-space check and allocation in one
+critical section while acquisition and verification remain parallel.
 
 Availability depends on the selected providers and local tools. The bundled
 Tesseract image includes English and Portuguese; install the corresponding

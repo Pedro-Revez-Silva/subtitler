@@ -114,6 +114,33 @@ class QueueTests(unittest.TestCase):
         job.assert_not_called()
         self.assertEqual(db.execute('SELECT state FROM work_queue').fetchone()[0],'queued')
 
+    def test_same_disk_remux_checks_space_after_the_previous_write(self):
+        self.manager.cfg['prune_embedded']=True
+        second=self.root/'Other.mkv'; second.write_bytes(b'other')
+        barrier=threading.Barrier(2)
+        free={'bytes':25}
+        def worker(path):
+            manager=Manager(self.request)
+            def remux(item,fp,*args):
+                available=free['bytes']
+                if available-10 < 10:
+                    return fp,{'status':'insufficient_space'}
+                # Both jobs pass without the cross-file disk lock. Simulate
+                # the gap between a free-space measurement and physical writes.
+                time.sleep(.1)
+                free['bytes']=available-10
+                return fp,{'status':'remuxed'}
+            try:
+                barrier.wait(timeout=5)
+                with patch.object(manager,'remux',side_effect=remux):
+                    return manager.prune({**self.item,'Path':str(path)},fingerprint(path),
+                        [{'index':2,'codec_type':'subtitle','tags':{'language':'tur'}}],120,False)[1]['status']
+            finally:manager.catalogue.db.close()
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            result=list(pool.map(worker,[self.video,second]))
+        self.assertEqual(sorted(result),['insufficient_space','remuxed'])
+        self.assertEqual(free['bytes'],15)
+
     def test_generation_reports_active_work_before_it_finishes(self):
         self.register(); db=self.manager.catalogue.db
         enqueue(db,str(self.video),self.fp,'transcription'); db.commit()
