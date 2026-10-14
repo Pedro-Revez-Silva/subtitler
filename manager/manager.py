@@ -946,6 +946,18 @@ class Manager:
         if Path(path).suffix.lower() != ".mkv":
             return fp, {"status": "review_non_mkv", "remove_streams": remove}
         physical = backing_path(path)
+        locks = self.catalogue.root / "media-writes"
+        locks.mkdir(exist_ok=True)
+        # Pool totals cannot reserve one branch's free space. Hold this disk's
+        # lock through allocation and replacement, shared by both job queues.
+        with (locks / (str(physical.stat().st_dev) + ".lock")).open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            return self.remux(item, fp, streams, duration, remove, physical)
+
+    def remux(self, item, fp, streams, duration, remove, physical):
+        path = item["Path"]
+        if fingerprint(path) != fp:
+            raise Review("media_changed_during_work")
         free = shutil.disk_usage(physical.parent).free
         required = Path(path).stat().st_size + max(10, self.cfg.get("min_free_gb", 50)) * 1024 ** 3
         if free < required:
