@@ -115,6 +115,7 @@ class ConfigurableLanguagesTests(unittest.TestCase):
         self.assertFalse(promoted['internal_source'])
 
     def test_setting_change_requeues_previously_managed_media(self):
+        self.manager.cfg['local_transcription'] = True
         self.register()
         db = self.manager.catalogue.db
         db.execute("UPDATE media SET checked=100,status='managed',next_try=9999999999")
@@ -131,6 +132,7 @@ class ConfigurableLanguagesTests(unittest.TestCase):
             return {'output': 'accepted-' + lang + '.srt'}
         with patch.object(self.manager, 'probe', return_value=([audio], 120)), \
              patch.object(self.manager, 'ensure', ensure), patch.object(self.manager, 'fallback', fallback), \
+             patch('manager.run', return_value=b''), \
              patch.object(self.manager, 'cleanup_sidecars'), patch.object(self.manager, 'prune', return_value=(self.fp, {'status': 'disabled'})), \
              patch.object(self.manager, 'emit'):
             self.manager.scan()

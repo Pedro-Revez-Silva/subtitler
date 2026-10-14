@@ -23,8 +23,8 @@ func TestRunnerDoesNotSendCredentialsToStatusOrDryRun(t *testing.T) {
 	cfg := config.Default()
 	cfg.Management.Script = script
 	cfg.Management.PaidFallback = true
-	for _, action := range []string{"status", "scan"} {
-		cfg.DryRun = true
+	for _, action := range []string{"status", "scan", "files", "transcription"} {
+		cfg.DryRun = action != "files"
 		var out bytes.Buffer
 		if err := Run(context.Background(), cfg, action, nil, nil, &out); err != nil {
 			t.Fatal(err)

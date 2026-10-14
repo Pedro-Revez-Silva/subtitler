@@ -29,13 +29,13 @@ func Run(ctx context.Context, cfg config.Config, action string, items []arr.Medi
 		"retry_seconds": cfg.Processing.RetryFailedAfter.Seconds(),
 		"ffmpeg":        cfg.Tools.FFmpeg, "ffprobe": cfg.Tools.FFprobe, "feedback": feedback,
 	}
-	if action == "scan" && !cfg.DryRun {
+	if (action == "scan" || action == "files" || action == "transcription") && !cfg.DryRun {
 		request["arr"] = map[string]any{
 			"radarr": map[string]string{"url": cfg.Radarr.URL, "api_key": cfg.Radarr.APIKey},
 			"sonarr": map[string]string{"url": cfg.Sonarr.URL, "api_key": cfg.Sonarr.APIKey},
 		}
 	}
-	if cfg.Management.PaidFallback && action == "scan" && !cfg.DryRun {
+	if cfg.Management.PaidFallback && (action == "scan" || action == "transcription") && !cfg.DryRun {
 		request["openai"] = map[string]string{"api_key": cfg.OpenAI.APIKey, "base_url": cfg.OpenAI.BaseURL,
 			"transcription_model": cfg.OpenAI.TranscriptionModel, "translation_model": cfg.OpenAI.TranslationModel}
 	}

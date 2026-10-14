@@ -27,6 +27,7 @@ import time
 import traceback
 import unicodedata
 import uuid
+from scheduler import prepare, enqueue, drain, emit as queue_emit
 from locales import ambiguous, base_language, language, matches, normalize, text_language_supported
 
 logging.disable(logging.CRITICAL)  # third-party exceptions may contain credentials
@@ -85,6 +86,7 @@ def stream_signature(stream):
 
 
 def recovery_action(detail, status):
+    if status == "queued_transcription": return "run_transcription"
     if status == "managed": return "periodic_recheck"
     if status == "managed_cleanup_pending": return "retry_subtitle_cleanup"
     failures = set()
@@ -259,6 +261,7 @@ class Catalogue:
                 source TEXT, reason TEXT, retry_after REAL, PRIMARY KEY(path,fingerprint,language,sha,source));
         """)
         self.db.commit()
+        prepare(self.db)
 
     def caption(self, path, fp, lang):
         row = self.db.execute("SELECT sha,data FROM captions WHERE path=? AND fingerprint=? AND language=?",
@@ -343,7 +346,11 @@ class Manager:
         self.word_samples = {}
 
     def emit(self, **record):
-        print(json.dumps(record, ensure_ascii=False), flush=True)
+        # Both independent coordinators and all workers share this record lock.
+        # Large JSON diagnostics must remain one line in the daemon log.
+        with (self.catalogue.root / 'output.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            queue_emit(record)
 
     def probe(self, path):
         result = json.loads(run([self.ffprobe, "-v", "error", "-show_streams", "-show_format", "-of", "json", path], 120))
@@ -458,7 +465,7 @@ class Manager:
         name = name or self.cfg.get("verification_model") or "base"
         if name not in self.models:
             from faster_whisper import WhisperModel
-            self.models[name] = WhisperModel(name, device="cpu", compute_type="int8", cpu_threads=4,
+            self.models[name] = WhisperModel(name, device="cpu", compute_type="int8", cpu_threads=self.cfg.get("queues", {}).get("worker_threads", 2),
                                             download_root=str(self.catalogue.root / "models"))
         return self.models[name]
 
@@ -749,22 +756,33 @@ class Manager:
         return {"status": "missing_or_unverified", "failures": sorted(set(failures)),
                 "providers": getattr(self, "provider_health", {}), "generation_attempted": False, "diagnostics": diagnostics[-10:]}
 
+    def generation_blocker(self, lang, current):
+        if not text_language_supported(lang):
+            return "subtitle_language_detector_unavailable"
+        unavailable = {"local_word_verifier_unavailable", "subtitle_language_detector_unavailable"}.intersection(current.get("failures", []))
+        if unavailable:
+            return sorted(unavailable)[0]
+        uncertain = {"word_verification_inconclusive", "timing_alignment_inconclusive", "translated_sidecar_identity_unverified", "candidate_verification_pending", "candidate_verifier_failed"}
+        if uncertain.intersection(current.get("failures", [])):
+            return "existing_candidate_needs_review"
+        health = current.get("providers", {})
+        if any(state != "searched" for state in health.values()) or not health:
+            return "provider_search_incomplete"
+        return None
+
+    def needs_generation(self, detail):
+        return bool(self.cfg.get("local_transcription") or self.cfg.get("paid_fallback")) and any(
+            "output" not in detail.get(lang, {}) and not self.generation_blocker(lang, detail.get(lang, {}))
+            for lang in self.languages)
+
     def fallback(self, item, fp, streams, duration, lang, detail, work):
         from paid import Paid, PaidUnavailable
         current = detail[lang]
         if "output" in current:
             return current
-        if not text_language_supported(lang):
-            return {**current, "generation_deferred": "subtitle_language_detector_unavailable"}
-        unavailable = {"local_word_verifier_unavailable", "subtitle_language_detector_unavailable"}.intersection(current.get("failures", []))
-        if unavailable:
-            return {**current, "generation_deferred": sorted(unavailable)[0]}
-        uncertain = {"word_verification_inconclusive", "timing_alignment_inconclusive", "translated_sidecar_identity_unverified", "candidate_verification_pending", "candidate_verifier_failed"}
-        if uncertain.intersection(current.get("failures", [])):
-            return {**current, "generation_deferred": "existing_candidate_needs_review"}
-        health = current.get("providers", {})
-        if any(state != "searched" for state in health.values()) or not health:
-            return {**current, "generation_deferred": "provider_search_incomplete"}
+        blocker = self.generation_blocker(lang, current)
+        if blocker:
+            return {**current, "generation_deferred": blocker}
         self.emit(path=item["Path"], language=lang, stage="last_resort_generation")
         audio = self.audio(streams, lang, language(item.get("OriginalLanguage")))
         reference = work / f"audio-{audio['index']}.wav"
@@ -807,7 +825,7 @@ class Manager:
             source_id = "translate:" + source_sha + ":" + lang
             if not self.catalogue.rejected(item["Path"], fp, lang, source=source_id):
                 try:
-                    paid = Paid(self.catalogue.db, self.request.get("openai", {}), self.cfg["paid_daily_usd"])
+                    paid = Paid(self.catalogue.db, self.request.get("openai", {}), self.cfg.get("paid_daily_usd", 0))
                     cues = self.load(source["output"], duration)
                     for cue, text in zip(cues, paid.translate(cues, lang, item.get("Context", ""))):
                         cue.text = text
@@ -832,7 +850,7 @@ class Manager:
             return current
         try:
             import pysubs2
-            paid = Paid(self.catalogue.db, self.request.get("openai", {}), self.cfg["paid_daily_usd"])
+            paid = Paid(self.catalogue.db, self.request.get("openai", {}), self.cfg.get("paid_daily_usd", 0))
             cues = pysubs2.SSAFile()
             for offset in range(0, int(duration) + 1, 1200):
                 seconds = min(1200, duration - offset)
@@ -1010,6 +1028,8 @@ class Manager:
             except BlockingIOError:
                 return self.emit(status="scan_already_running")
             self.scan_locked()
+        if self.request.get("action", "scan") == "scan" and not self.request.get("dry_run"):
+            self.transcription()
 
     def scan_locked(self):
         db = self.catalogue.db
@@ -1021,6 +1041,7 @@ class Manager:
                 # Keep provenance, but immediately reconsider previously checked
                 # files when the configured target set/order changes.
                 db.execute("UPDATE media SET checked=-1,next_try=0,status='pending' WHERE checked<>0")
+                db.execute("DELETE FROM work_queue WHERE state<>'running'")
                 db.execute("INSERT OR REPLACE INTO settings VALUES('required_languages',?)", (policy,))
                 db.commit()
             revision = db.execute("SELECT value FROM settings WHERE key='recovery_revision'").fetchone()
@@ -1030,8 +1051,23 @@ class Manager:
                 db.execute("UPDATE media SET checked=-1,next_try=0 WHERE status IN ('needs_attention','managed_cleanup_pending')")
                 db.execute("INSERT OR REPLACE INTO settings VALUES('recovery_revision','1')")
                 db.commit()
+            budget = json.dumps(self.cfg.get('paid_daily_usd', 0))
+            old_budget = db.execute("SELECT value FROM settings WHERE key='paid_daily_usd'").fetchone()
+            if not old_budget or old_budget[0] != budget:
+                # Re-check jobs deferred under an earlier budget without
+                # resetting a single reservation or cached translation chunk.
+                for path, raw in db.execute("SELECT path,detail FROM media WHERE status='needs_attention'").fetchall():
+                    if json.loads(raw).get('recovery', {}).get('action') == 'wait_for_daily_budget':
+                        db.execute("UPDATE media SET checked=-1,next_try=0 WHERE path=?", (path,))
+                        db.execute("UPDATE work_queue SET available=0 WHERE path=? AND kind='transcription' AND state='queued'", (path,))
+                db.execute("INSERT OR REPLACE INTO settings VALUES('paid_daily_usd',?)", (budget,))
+                db.commit()
         paths = set()
-        for item in self.request.get("items") or []:
+        for index, item in enumerate(self.request.get("items") or []):
+            # Large inventories must not hold the SQLite writer lock while
+            # another queue is publishing or reserving its paid allowance.
+            if index % 100 == 0:
+                db.commit()
             path = item["Path"]
             paths.add(path)
             try:
@@ -1042,6 +1078,7 @@ class Manager:
                 continue
             row = db.execute("SELECT fingerprint FROM media WHERE path=?", (path,)).fetchone()
             if not row or row[0] != fp:
+                db.execute("DELETE FROM work_queue WHERE path=? AND state<>'running'", (path,))
                 db.execute("INSERT OR REPLACE INTO media(path,fingerprint,item) VALUES(?,?,?)", (path, fp, json.dumps(item)))
             else:
                 db.execute("UPDATE media SET item=? WHERE path=?", (json.dumps(item), path))
@@ -1052,6 +1089,11 @@ class Manager:
                     output = json.loads(data)["output"]
                     if not Path(output).exists() or digest(output) != sha:
                         db.execute("UPDATE media SET next_try=0,checked=0 WHERE path=?", (path,))
+        db.commit()
+        # Only inventory paths remain eligible for new jobs; finish already-running work safely.
+        for queued_path, in db.execute("SELECT DISTINCT path FROM work_queue WHERE state<>'running'").fetchall():
+            if queued_path not in paths:
+                db.execute("DELETE FROM work_queue WHERE path=? AND state<>'running'", (queued_path,))
         db.commit()
         jobs = 0
         rows = db.execute("SELECT path,fingerprint,item,detail,status,checked FROM media WHERE next_try<=? "
@@ -1066,86 +1108,146 @@ class Manager:
             rows.remove(retry)
             rows.insert(min(index, len(rows)), retry)
         for path, fp, raw, previous_detail, previous_status, checked in rows:
-            if path not in paths:
-                continue
-            if self.request.get("max_jobs", 0) > 0 and jobs >= self.request["max_jobs"]:
-                break
-            item = json.loads(raw)
             if self.request.get("dry_run"):
+                if self.request.get("max_jobs", 0) > 0 and jobs >= self.request["max_jobs"]:
+                    break
                 self.emit(path=path, status="planned", languages=self.languages, paid_calls=0)
                 jobs += 1
                 continue
             try:
-                if item.get("Source") != "manual" and time.time() - Path(path).stat().st_mtime < 300:
+                if json.loads(raw).get("Source") != "manual" and time.time() - Path(path).stat().st_mtime < 300:
                     continue
             except FileNotFoundError:
                 continue
-            jobs += 1
-            status, detail, new_fp = "needs_attention", {}, fp
-            stage = "probe"
-            try:
-                self.feedback(path, fp)
-                streams, duration = self.probe(path)
-                with tempfile.TemporaryDirectory(prefix="ownership-", dir=self.request["temp_dir"]) as directory:
-                    work = Path(directory)
-                    for lang in self.languages:
-                        stage = "acquire:" + lang
-                        try:
-                            detail[lang] = self.ensure(item, fp, streams, duration, lang, work)
-                        except Exception as error:
-                            detail[lang] = {"status": "missing_or_unverified", "error": str(error) if isinstance(error, Review) else "local_engine_failed",
-                                            "diagnostic": diagnostic(error, stage)}
-                    # All configured searches finish before generation. Prefer
-                    # languages supplied by existing dialogue for free local
-                    # transcription; keep configured order within each group.
-                    def order(lang):
-                        audio = self.audio(streams, lang, language(item.get("OriginalLanguage")))
-                        tags = audio.get("tags", {})
-                        return 0 if matches(language(tags.get("language"), tags.get("title")), lang) else 1
-                    for lang in sorted(self.languages, key=order):
-                        stage = "generate:" + lang
-                        try:
-                            detail[lang] = self.fallback(item, fp, streams, duration, lang, detail, work)
-                        except Exception as error:
-                            detail[lang].update(error=str(error) if isinstance(error, Review) else "local_engine_failed", diagnostic=diagnostic(error, stage))
-                    complete = all("output" in d for d in detail.values())
-                    stage = "sidecar_cleanup"
-                    self.cleanup_sidecars(path, fp, complete)
-                    stage = "embedded_cleanup"
-                    try:
-                        new_fp, pruning = self.prune(item, fp, streams, duration, complete)
-                    except Exception as error:
-                        pruning = {"status": "retry_pending", "reason": str(error) if isinstance(error, Review) else "local_engine_failed",
-                                   "diagnostic": diagnostic(error, stage)}
-                    detail["track_policy"] = pruning
-                    cleaned = pruning["status"] in {"disabled", "no_change", "remuxed"}
-                    status = ("managed" if cleaned else "managed_cleanup_pending") if complete else "needs_attention"
-            except Review as error:
-                detail["error"] = str(error)
-                detail["diagnostic"] = diagnostic(error, stage)
-            except Exception as error:
-                detail["error"] = "local_engine_failed"
-                detail["diagnostic"] = diagnostic(error, stage)
-            # Never persist a stale success across a concurrent Radarr import.
-            if Path(path).exists() and fingerprint(path) == new_fp:
-                pending = db.execute("SELECT 1 FROM feedback WHERE path=? AND applied=0", (path,)).fetchone()
-                attempt = 0 if status == "managed" else json.loads(previous_detail).get("recovery", {}).get("attempt", 0) + 1
-                maximum = max(3600, self.request.get("retry_seconds", 86400))
-                delay = 0 if pending else (7 * 86400 if status == "managed" else min(maximum, 3600 * 2 ** min(attempt - 1, 8)))
-                action = recovery_action(detail, status)
-                if not pending and action == "wait_for_daily_budget":
-                    delay = max(delay, 86400 - time.time() % 86400 + 60)
-                if not pending and action in {"provider_configuration_required", "translation_requires_review"}:
-                    delay = max(delay, 86400)
-                detail["recovery"] = {"attempt": attempt, "retry_in_seconds": delay, "action": action}
-                db.execute("UPDATE media SET fingerprint=?,checked=?,next_try=?,status=?,detail=? WHERE path=?",
-                           (new_fp, time.time(), time.time() + delay, status, json.dumps(detail), path))
-                db.commit()
-            self.emit(path=path, status=status, detail=detail)
-            self.process_rescans()
-        self.emit(status="scan_finished", jobs=jobs, inventory=len(paths))
+            feedback = db.execute("SELECT 1 FROM feedback WHERE path=? AND applied=0", (path,)).fetchone()
+            waiting = db.execute("SELECT 1 FROM work_queue WHERE path=? AND kind='transcription' AND state IN ('queued','running')", (path,)).fetchone()
+            if waiting and not feedback:
+                continue
+            if feedback:
+                db.execute("DELETE FROM work_queue WHERE path=? AND kind='transcription' AND state<>'running'", (path,))
+            enqueue(db, path, fp, "files", priority=2 if feedback else (1 if retry and path == retry[0] else 0))
+        db.commit()
         if not self.request.get("dry_run"):
+            drain(self, "files")
             self.process_rescans()
+
+    def transcription(self):
+        with (self.catalogue.root / "transcription.lock").open("a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return self.emit(status="transcription_already_running")
+            if not self.request.get("dry_run"):
+                drain(self, "transcription")
+
+    def process_job(self, path, expected_fp, kind):
+        locks = self.catalogue.root / "jobs"
+        locks.mkdir(exist_ok=True)
+        with (locks / (hashlib.sha256(path.encode()).hexdigest() + ".lock")).open("a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                self.catalogue.db.execute("UPDATE work_queue SET state='queued',available=? WHERE path=? AND kind=?",
+                                          (time.time() + 60, path, kind))
+                self.catalogue.db.commit()
+                return
+            return self.process_job_locked(path, expected_fp, kind)
+
+    def process_job_locked(self, path, expected_fp, kind):
+        db = self.catalogue.db
+        row = db.execute("SELECT path,fingerprint,item,detail,status,checked FROM media WHERE path=?", (path,)).fetchone()
+        if not row or not Path(path).exists() or row[1] != expected_fp or fingerprint(path) != expected_fp:
+            self.emit(path=path, status="stale_job_skipped", queue=kind)
+            return
+        path, fp, raw, previous_detail, previous_status, checked = row
+        item = json.loads(raw)
+        if kind == "transcription" and (checked <= 0 or time.time() - checked > 86400 or
+                db.execute("SELECT 1 FROM feedback WHERE path=? AND applied=0", (path,)).fetchone()):
+            enqueue(db, path, fp, "files", priority=2)
+            db.commit()
+            return
+        detail = {} if kind != "transcription" else {k:v for k,v in json.loads(previous_detail).items() if k in self.languages}
+        status, new_fp = "needs_attention", fp
+        generation = False
+        stage = "probe"
+        try:
+            self.feedback(path, fp)
+            streams, duration = self.probe(path)
+            with tempfile.TemporaryDirectory(prefix="ownership-", dir=self.request["temp_dir"]) as directory:
+                work = Path(directory)
+                for lang in self.languages:
+                    if kind == "transcription" and "output" not in detail.get(lang, {}):
+                        continue
+                    stage = "acquire:" + lang
+                    try:
+                        detail[lang] = self.ensure(item, fp, streams, duration, lang, work)
+                    except Exception as error:
+                        detail[lang] = {"status": "missing_or_unverified", "error": str(error) if isinstance(error, Review) else "local_engine_failed",
+                                        "diagnostic": diagnostic(error, stage)}
+                # All configured searches finish before generation. Prefer
+                # languages supplied by existing dialogue for free local
+                # transcription; keep configured order within each group.
+                def order(lang):
+                    audio = self.audio(streams, lang, language(item.get("OriginalLanguage")))
+                    tags = audio.get("tags", {})
+                    return 0 if matches(language(tags.get("language"), tags.get("title")), lang) else 1
+                for lang in sorted(self.languages, key=order) if kind != "files" else []:
+                    stage = "generate:" + lang
+                    try:
+                        if "output" not in detail.get(lang, {}) and not self.generation_blocker(lang, detail.get(lang, {})):
+                            audio = self.audio(streams, lang, language(item.get("OriginalLanguage")))
+                            reference = work / f"audio-{audio['index']}.wav"
+                            if not reference.exists():
+                                run([self.ffmpeg, "-v", "error", "-y", "-threads",
+                                     str(self.cfg.get("queues", {}).get("worker_threads", 2)),
+                                     "-i", path, "-map", f"0:{audio['index']}", "-vn", "-ac", "1", "-ar", "16000", str(reference)])
+                        detail[lang] = self.fallback(item, fp, streams, duration, lang, detail, work)
+                    except Exception as error:
+                        detail[lang].update(error=str(error) if isinstance(error, Review) else "local_engine_failed", diagnostic=diagnostic(error, stage))
+                complete = all("output" in detail.get(lang, {}) for lang in self.languages)
+                generation = self.needs_generation(detail)
+                stage = "sidecar_cleanup"
+                self.cleanup_sidecars(path, fp, complete)
+                stage = "embedded_cleanup"
+                try:
+                    new_fp, pruning = self.prune(item, fp, streams, duration, complete)
+                except Exception as error:
+                    pruning = {"status": "retry_pending", "reason": str(error) if isinstance(error, Review) else "local_engine_failed",
+                               "diagnostic": diagnostic(error, stage)}
+                detail["track_policy"] = pruning
+                cleaned = pruning["status"] in {"disabled", "no_change", "remuxed"}
+                status = ("managed" if cleaned else "managed_cleanup_pending") if complete else (
+                    "queued_transcription" if kind == "files" and generation else "needs_attention")
+        except Review as error:
+            detail["error"] = str(error)
+            detail["diagnostic"] = diagnostic(error, stage)
+        except Exception as error:
+            detail["error"] = "local_engine_failed"
+            detail["diagnostic"] = diagnostic(error, stage)
+        # Never persist a stale success across a concurrent Radarr import.
+        if Path(path).exists() and fingerprint(path) == new_fp:
+            pending = db.execute("SELECT 1 FROM feedback WHERE path=? AND applied=0", (path,)).fetchone()
+            attempt = 0 if status in {"managed", "queued_transcription"} else json.loads(previous_detail).get("recovery", {}).get("attempt", 0) + 1
+            maximum = max(3600, self.request.get("retry_seconds", 86400))
+            delay = 0 if pending or status == "queued_transcription" else (7 * 86400 if status == "managed" else min(maximum, 3600 * 2 ** min(attempt - 1, 8)))
+            action = recovery_action(detail, status)
+            if not pending and action == "wait_for_daily_budget":
+                delay = max(delay, 86400 - time.time() % 86400 + 60)
+            if not pending and action in {"provider_configuration_required", "translation_requires_review"}:
+                delay = max(delay, 86400)
+            detail["recovery"] = {"attempt": attempt, "retry_in_seconds": delay, "action": action}
+            db.execute("UPDATE media SET fingerprint=?,checked=?,next_try=?,status=?,detail=? WHERE path=?",
+                       (new_fp, time.time(), time.time() + delay, status, json.dumps(detail), path))
+            if status == "queued_transcription" or (kind == "transcription" and generation and status == "needs_attention"):
+                if kind == "transcription":
+                    # Reschedule this claim directly; coordinator completion must not overwrite it.
+                    db.execute("UPDATE work_queue SET state='queued',fingerprint=?,available=? WHERE path=? AND kind='transcription'",
+                               (new_fp, time.time() + delay, path))
+                else:
+                    enqueue(db, path, new_fp, "transcription")
+            db.commit()
+        self.emit(path=path, status=status, detail=detail)
+        self.process_rescans()
 
     def status(self):
         db = self.catalogue.db
@@ -1155,9 +1257,12 @@ class Manager:
         spent = 0
         if db.execute("SELECT 1 FROM sqlite_master WHERE name='paid_ledger'").fetchone():
             spent = db.execute("SELECT coalesce(sum(reserved),0) FROM paid_ledger WHERE day=?", (time.strftime("%Y-%m-%d", time.gmtime()),)).fetchone()[0]
-        self.emit(required_languages=self.languages, counts=counts, pending_feedback=db.execute("SELECT count(*) FROM feedback WHERE applied=0").fetchone()[0],
+        queues = {kind: dict(db.execute("SELECT state,count(*) FROM work_queue WHERE kind=? GROUP BY state", (kind,)))
+                  for kind in ["files", "transcription"]}
+        schedulers = {k:json.loads(v) for k,v in db.execute("SELECT key,value FROM settings WHERE key LIKE 'scheduler_%'")}
+        self.emit(required_languages=self.languages, counts=counts, queues=queues, schedulers=schedulers, pending_feedback=db.execute("SELECT count(*) FROM feedback WHERE applied=0").fetchone()[0],
                   pending_rescans=db.execute("SELECT count(*) FROM rescans").fetchone()[0],
-                  media=details, paid_reserved_usd_today=round(spent, 4))
+                  media=details, paid_reserved_usd_today=round(spent, 4), paid_daily_usd=self.cfg.get('paid_daily_usd', 0))
 
 
 def main():
@@ -1170,9 +1275,13 @@ def main():
     request = json.load(sys.stdin)
     manager = Manager(request)
     action = request["action"]
-    if action == "scan":
+    if action in {"scan", "files", "transcription"}:
+        os.nice(max(0, 10 - os.nice(0)))
         Path(request["temp_dir"]).mkdir(parents=True, exist_ok=True)
-        manager.scan()
+        if action == "transcription":
+            manager.transcription()
+        else:
+            manager.scan()
     elif action == "status":
         manager.status()
     elif action == "report":
