@@ -104,7 +104,7 @@ class ConfigurableLanguagesTests(unittest.TestCase):
         with patch('paid.Paid') as paid, patch.object(self.manager, 'sync', side_effect=AssertionError('inherited clock was realigned')):
             paid.return_value.translate.return_value = [FRENCH + f" Numéro {i}." for i in range(30)]
             result = self.manager.fallback(self.item, self.fp, [audio], 120, 'fr',
-                                           {'fr': {'providers': {'opensubtitlescom': 'searched'}}}, self.root)
+                                           {'fr': {'providers': {'opensubtitlescom': 'searched'}}, 'sources_checked_at': 1.0}, self.root)
         self.assertEqual(result['timing']['method'], 'inherited_accepted_source_timestamps')
         self.assertTrue(Path(canonical(self.video, 'fr')).exists())
         self.assertFalse(Path(canonical(self.video, 'en')).exists())

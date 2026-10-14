@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from manager import Manager, canonical, digest, fingerprint
 from paid import Paid, PaidUnavailable
-from scheduler import Admission, claim, drain, enqueue
+from scheduler import Admission, LoadSensor, claim, drain, enqueue
 import test_manager as fixtures
 
 
@@ -114,6 +114,26 @@ class QueueTests(unittest.TestCase):
         job.assert_not_called()
         self.assertEqual(db.execute('SELECT state FROM work_queue').fetchone()[0],'queued')
 
+    def test_generation_reports_active_work_before_it_finishes(self):
+        self.register(); db=self.manager.catalogue.db
+        enqueue(db,str(self.video),self.fp,'transcription'); db.commit()
+        def job(*args):
+            raw=db.execute("SELECT value FROM settings WHERE key='scheduler_transcription'").fetchone()[0]
+            self.assertEqual(json.loads(raw)['active'],1)
+        with patch.object(self.manager,'process_job',side_effect=job), patch.object(self.manager,'emit'):
+            drain(self.manager,'transcription')
+        self.assertEqual(json.loads(db.execute("SELECT value FROM settings WHERE key='scheduler_transcription'").fetchone()[0])['active'],0)
+
+    def test_stale_provider_proof_requeues_files_before_spending(self):
+        self.register(); db=self.manager.catalogue.db
+        # Recent generation retries must not make an old provider search fresh.
+        db.execute('UPDATE media SET checked=?,detail=?',
+                   (time.time(),json.dumps({'sources_checked_at':time.time()-2*86400})))
+        enqueue(db,str(self.video),self.fp,'transcription'); db.commit()
+        with patch.object(self.manager,'fallback',side_effect=AssertionError('stale search authorized spending')):
+            self.manager.process_job(str(self.video),self.fp,'transcription')
+        self.assertEqual(db.execute("SELECT state FROM work_queue WHERE kind='files'").fetchone()[0],'queued')
+
     def test_two_real_processes_work_concurrently_and_preserve_the_catalogue(self):
         self.request.update(action='files',languages=['en'],max_jobs=2)
         self.manager.languages=['en']
@@ -137,6 +157,20 @@ class QueueTests(unittest.TestCase):
 
 
 class AdmissionTests(unittest.TestCase):
+    def test_reclaimable_video_cache_is_not_treated_as_exhausted_memory(self):
+        gib=1024**3
+        files={'/proc/stat':'cpu 1 0 0 10 0 0 0 0\n',
+               '/proc/meminfo':f'MemAvailable: {8*gib//1024} kB\n',
+               '/sys/fs/cgroup/memory.max':str(6*gib),
+               '/sys/fs/cgroup/memory.current':str(5*gib),
+               '/sys/fs/cgroup/memory.stat':f'inactive_file {3*gib}\n',
+               '/proc/pressure/io':'some avg10=0.00 avg60=0.00\n'}
+        with patch.object(Path,'read_text',lambda path:files[str(path)]), \
+             patch('scheduler.os.getloadavg',return_value=(.1,.1,.1)), patch('scheduler.os.cpu_count',return_value=4):
+            sample=LoadSensor().sample()
+        self.assertEqual(sample['available_memory_gb'],4)
+        self.assertEqual(Admission({'adaptive':True},3).update(sample)[0],1)
+
     def test_idle_capacity_ramps_and_each_pressure_signal_stops_admission(self):
         gate=Admission({'adaptive':True},4)
         idle={'cpu_percent':10,'load_per_cpu':.1,'available_memory_gb':8,'io_pressure':0}

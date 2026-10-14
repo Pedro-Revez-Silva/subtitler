@@ -66,7 +66,15 @@ class LoadSensor:
         try:
             maximum = Path('/sys/fs/cgroup/memory.max').read_text().strip()
             if maximum != 'max':
-                available = min(available, int(maximum) - int(Path('/sys/fs/cgroup/memory.current').read_text()))
+                current = int(Path('/sys/fs/cgroup/memory.current').read_text())
+                # Like Docker's working-set metric, exclude reclaimable inactive
+                # file cache. Reading a large MKV must not pause the queue forever.
+                try:
+                    stats = dict(line.split() for line in Path('/sys/fs/cgroup/memory.stat').read_text().splitlines())
+                    inactive = int(stats.get('inactive_file', 0))
+                except (OSError, ValueError):
+                    inactive = 0
+                available = min(available, int(maximum) - current + min(current, inactive))
         except (OSError, ValueError):
             pass
         pressure = 0
@@ -209,6 +217,12 @@ def drain(manager, kind):
                 path, fp = row
                 started += 1
                 manager.emit(status='job_started', queue=kind, path=path)
+                # A single generation worker can spend hours in one job. Save
+                # its running state before entering the synchronous executor.
+                db.execute("INSERT OR REPLACE INTO settings VALUES(?,?)", ('scheduler_' + kind,
+                           json.dumps({'queue':kind,'active':len(active)+1,'limit':limit,'maximum':maximum,
+                                       'reason':reason,'load':sample,'updated_at':time.time()})))
+                db.commit()
                 if isinstance(executor, InlineExecutor):
                     future = executor.submit(manager.process_job, path, fp, kind)
                 else:

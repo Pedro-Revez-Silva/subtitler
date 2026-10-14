@@ -804,7 +804,7 @@ class Manager:
                 current = {**current, "local_transcription_failure": str(error)}
             except Exception:
                 current = {**current, "local_transcription_failure": "local_model_unavailable"}
-        other = next((l for l, d in detail.items() if l != lang and "output" in d), "")
+        other = next((l for l, d in detail.items() if l != lang and isinstance(d, dict) and "output" in d), "")
         source = detail.get(other, {})
         if ("output" not in source and not target_audio and not translate_audio
                 and audio_lang and self.cfg.get("paid_fallback")):
@@ -1161,12 +1161,15 @@ class Manager:
             return
         path, fp, raw, previous_detail, previous_status, checked = row
         item = json.loads(raw)
-        if kind == "transcription" and (checked <= 0 or time.time() - checked > 86400 or
+        searched_at = json.loads(previous_detail).get('sources_checked_at', checked)
+        if kind == "transcription" and (checked <= 0 or time.time() - searched_at > 86400 or
                 db.execute("SELECT 1 FROM feedback WHERE path=? AND applied=0", (path,)).fetchone()):
             enqueue(db, path, fp, "files", priority=2)
             db.commit()
             return
         detail = {} if kind != "transcription" else {k:v for k,v in json.loads(previous_detail).items() if k in self.languages}
+        if kind == 'transcription':
+            detail['sources_checked_at'] = searched_at
         status, new_fp = "needs_attention", fp
         generation = False
         stage = "probe"
@@ -1187,6 +1190,8 @@ class Manager:
                 # All configured searches finish before generation. Prefer
                 # languages supplied by existing dialogue for free local
                 # transcription; keep configured order within each group.
+                if kind == 'files':
+                    detail['sources_checked_at'] = time.time()
                 def order(lang):
                     audio = self.audio(streams, lang, language(item.get("OriginalLanguage")))
                     tags = audio.get("tags", {})

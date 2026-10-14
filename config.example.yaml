@@ -106,5 +106,5 @@ processing:
   concurrency: 1
   retry_failed_after: 24h
   max_attempts: 3
-  # 0 means unlimited. Start low to control OpenAI spend during first library runs.
+  # Ownership uses queue batches; legacy generation treats zero as unlimited.
   max_jobs_per_scan: 0 # Use the queue batch size; a positive value caps each queue cycle.

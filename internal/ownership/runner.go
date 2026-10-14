@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 	"time"
 
@@ -44,6 +46,14 @@ func Run(ctx context.Context, cfg config.Config, action string, items []arr.Medi
 		return err
 	}
 	cmd := exec.CommandContext(ctx, python, script)
+	// The key is supplied in stdin only to permitted generation actions. File
+	// workers, status and dry runs must not inherit it through the environment.
+	cmd.Env = []string{}
+	for _, value := range os.Environ() {
+		if !strings.HasPrefix(value, "OPENAI_API_KEY=") {
+			cmd.Env = append(cmd.Env, value)
+		}
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM) }
 	cmd.WaitDelay = 10 * time.Second
