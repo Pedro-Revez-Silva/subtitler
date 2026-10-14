@@ -124,6 +124,35 @@ are cached for resumption. Audio is chunked to stay below upload limits. Unknown
 models/endpoints fail closed. This limit applies to this manager, not other apps
 sharing the API key. No credentials are written to the catalogue or logs.
 
+The ownership daemon has two persistent queues. `files` acquires, checks and
+repairs existing/provider captions; `transcription` performs full local
+transcription and last-resort paid transcription/translation. All configured
+provider searches must complete first. Uncertain candidates stay in file
+recovery instead of authorizing generation. Daily budget waits and slow speech
+jobs never hold up the file queue. Queue rows contain paths, fingerprints and
+retry state, not audio or credentials. Restarts recover interrupted claims and
+retain validated captions, rejected candidates, translation cache and the paid
+ledger. A per-media lock also protects against a surviving orphan worker.
+
+Configure `management.queues` using the example YAML. Each queue has its own
+worker limit and processes a bounded batch before refreshing inventory. A
+positive `processing.max_jobs_per_scan` overrides the queue batch size for each
+cycle. Adaptive admission starts conservatively, samples host CPU/load,
+available memory (including container limits), and Linux IO pressure, and ramps
+up after three idle samples. High pressure pauses new jobs; running jobs finish
+safely. Worker processes run at reduced CPU priority and local Whisper uses
+`worker_threads` per worker. Set `adaptive: false` for fixed concurrency.
+Generation polls the persistent queue at least every 30 seconds, independently
+of the library scan interval. Status reports both queues and their current
+capacity/pressure. Non-MKV cleanup and insufficient-space reviews still require
+their existing recovery paths; concurrency does not bypass storage safeguards.
+
+`management.paid_daily_usd` remains a dollar limit shared by all generation
+workers. Reservations use a SQLite writer transaction, so concurrent jobs
+cannot each spend the same remaining allowance. Increasing the limit wakes
+budget-deferred jobs while preserving prior reservations. Paid work still runs
+only after existing subtitles, provider searches and local fallback fail.
+
 Native development:
 
 ```sh

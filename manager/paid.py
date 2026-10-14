@@ -33,6 +33,8 @@ class Paid:
 
     def reserve(self, amount, operation):
         day = time.strftime("%Y-%m-%d", time.gmtime())
+        if not math.isfinite(self.limit) or self.limit <= 0 or not math.isfinite(amount):
+            raise PaidUnavailable("paid_budget_configuration_invalid")
         try:
             self.db.execute("BEGIN IMMEDIATE")
             used = self.db.execute("SELECT coalesce(sum(reserved),0) FROM paid_ledger WHERE day=?", (day,)).fetchone()[0]

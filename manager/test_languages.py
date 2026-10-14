@@ -104,7 +104,7 @@ class ConfigurableLanguagesTests(unittest.TestCase):
         with patch('paid.Paid') as paid, patch.object(self.manager, 'sync', side_effect=AssertionError('inherited clock was realigned')):
             paid.return_value.translate.return_value = [FRENCH + f" Numéro {i}." for i in range(30)]
             result = self.manager.fallback(self.item, self.fp, [audio], 120, 'fr',
-                                           {'fr': {'providers': {'opensubtitlescom': 'searched'}}}, self.root)
+                                           {'fr': {'providers': {'opensubtitlescom': 'searched'}}, 'sources_checked_at': 1.0}, self.root)
         self.assertEqual(result['timing']['method'], 'inherited_accepted_source_timestamps')
         self.assertTrue(Path(canonical(self.video, 'fr')).exists())
         self.assertFalse(Path(canonical(self.video, 'en')).exists())
@@ -115,6 +115,7 @@ class ConfigurableLanguagesTests(unittest.TestCase):
         self.assertFalse(promoted['internal_source'])
 
     def test_setting_change_requeues_previously_managed_media(self):
+        self.manager.cfg['local_transcription'] = True
         self.register()
         db = self.manager.catalogue.db
         db.execute("UPDATE media SET checked=100,status='managed',next_try=9999999999")
@@ -131,6 +132,7 @@ class ConfigurableLanguagesTests(unittest.TestCase):
             return {'output': 'accepted-' + lang + '.srt'}
         with patch.object(self.manager, 'probe', return_value=([audio], 120)), \
              patch.object(self.manager, 'ensure', ensure), patch.object(self.manager, 'fallback', fallback), \
+             patch('manager.run', return_value=b''), \
              patch.object(self.manager, 'cleanup_sidecars'), patch.object(self.manager, 'prune', return_value=(self.fp, {'status': 'disabled'})), \
              patch.object(self.manager, 'emit'):
             self.manager.scan()

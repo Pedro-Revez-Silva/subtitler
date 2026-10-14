@@ -89,6 +89,11 @@ func runDaemon(ctx context.Context, logger *slog.Logger, args []string) error {
 	}
 
 	logger.Info("subtitler daemon started", "scan_interval", interval, "dry_run", cfg.DryRun)
+	if cfg.Management.Enabled && !cfg.DryRun {
+		service.RunOwnershipDaemon(ctx)
+		logger.Info("subtitler daemon stopped")
+		return nil
+	}
 	for {
 		if err := service.ScanAndProcess(ctx); err != nil {
 			logger.Error("scan cycle failed", "error", err)
