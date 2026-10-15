@@ -13,6 +13,7 @@ import hashlib
 import io
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import re
@@ -27,7 +28,8 @@ import time
 import traceback
 import unicodedata
 import uuid
-from scheduler import prepare, enqueue, drain, emit as queue_emit
+from scheduler import prepare, enqueue, drain, disk_resource, emit as queue_emit
+from mediawork import MediaAssets
 from locales import ambiguous, base_language, language, matches, normalize, text_language_supported
 
 logging.disable(logging.CRITICAL)  # third-party exceptions may contain credentials
@@ -344,6 +346,8 @@ class Manager:
         self.model = None
         self.models = {}
         self.word_samples = {}
+        self.assets = None
+        self.current_item = {}
 
     def emit(self, **record):
         # Both independent coordinators and all workers share this record lock.
@@ -417,6 +421,33 @@ class Manager:
             self.catalogue.db.execute("UPDATE feedback SET applied=1 WHERE id=?", (id_,))
         self.catalogue.db.commit()
 
+    def reference(self, item, fp, streams, duration, audio, work):
+        if self.assets is not None and self.assets.path == item['Path'] and self.assets.fp == fp:
+            return self.assets.audio(audio['index'])
+        if self.assets is not None:
+            self.assets.close()
+        # Standalone operations use the same lazy path; the job wrapper closes
+        # the cache lease, while short CLI/test instances may close it explicitly.
+        self.current_item = item
+        self.assets = MediaAssets(self, item['Path'], fp, streams, duration, work)
+        return self.assets.audio(audio['index'])
+
+    def generation_resource(self, fp, detail):
+        tracks = detail.get('audio_tracks')
+        if not tracks:
+            return disk_resource(fp)
+        streams = [{'codec_type':'audio','index':t['index'],'tags':{'language':t['language']}} for t in tracks]
+        for lang in self.languages:
+            if 'output' in detail.get(lang, {}):
+                continue
+            selected = self.audio(streams, lang, '')
+            audio_lang = selected['tags']['language']
+            if ((audio_lang and base_language(audio_lang) == base_language(lang)) or
+                    (self.cfg.get('local_transcription') and lang == 'en') or
+                    not any('output' in detail.get(other,{}) for other in self.languages if other != lang)):
+                return disk_resource(fp)
+        return 'text'
+
     def load(self, path, duration):
         import pysubs2
         try:
@@ -481,20 +512,25 @@ class Manager:
         for name in dict.fromkeys([primary, fallback]):
             if name == "none": continue
             seconds = 60 if name == primary else 90
-            key = (str(reference), base_language(lang), name)
+            points = [max(0, starts[int((len(starts) - 1) * fraction)] - 3) for fraction in [0.15, 0.5, 0.85]]
+            key = (reference.identity if hasattr(reference, 'identity') else str(reference), base_language(lang), name, seconds, tuple(points))
             if key not in self.word_samples:
-                samples = []
-                self.emit(stage="verifying_dialogue", language=lang, model=name)
-                for fraction in [0.15, 0.5, 0.85]:
-                    start = max(0, starts[int((len(starts) - 1) * fraction)] - 3)
-                    sample = work / f"sample-{name}-{fraction}.wav"
-                    run([self.ffmpeg, "-v", "error", "-y", "-ss", str(start), "-i", str(reference),
-                         "-t", str(seconds), "-ar", "16000", "-ac", "1", str(sample)], 120)
-                    segments, info = self.speech_model(name).transcribe(str(sample), language=base_language(lang),
-                                                                      word_timestamps=True, vad_filter=True, beam_size=5)
-                    recognized = [(w.word, w.start + start, w.end + start) for s in segments for w in (s.words or [])]
-                    samples.append((start, recognized))
-                self.word_samples[key] = samples
+                def recognize():
+                    samples = []
+                    self.emit(stage="verifying_dialogue", language=lang, model=name)
+                    for index, start in enumerate(points):
+                        sample = work / f"sample-{name}-{index}.wav"
+                        if hasattr(reference, 'sample'):
+                            reference.sample(start, seconds, sample)
+                        else:
+                            run([self.ffmpeg, "-v", "error", "-y", "-ss", str(start), "-i", str(reference),
+                                 "-t", str(seconds), "-ar", "16000", "-ac", "1", str(sample)], 120)
+                        segments, info = self.speech_model(name).transcribe(str(sample), language=base_language(lang),
+                                                                          word_timestamps=True, vad_filter=True, beam_size=5)
+                        recognized = [(w.word, w.start + start, w.end + start) for s in segments for w in (s.words or [])]
+                        samples.append((start, recognized))
+                    return samples
+                self.word_samples[key] = reference.word_samples(key, recognize) if hasattr(reference, 'word_samples') else recognize()
             metrics = [word_metrics(cues, recognized, start, start + seconds) for start, recognized in self.word_samples[key]]
             good = sum(m["status"] == "verified" for m in metrics)
             status = "mismatch" if any(m["status"] == "mismatch" for m in metrics) else ("verified_samples" if good >= 2 else "inconclusive")
@@ -532,7 +568,10 @@ class Manager:
                     cached = json.loads(metadata.read_text()) if metadata.exists() else {}
                     if not output.exists() or cached.get("sha") != digest(output):
                         bitmap = work / f"embedded-{stream['index']}.sup"
-                        run([self.ffmpeg, "-v", "error", "-y", "-i", path, "-map", f"0:{stream['index']}", "-c:s", "copy", str(bitmap)])
+                        if self.assets is not None:
+                            bitmap = self.assets.subtitle(stream)
+                        else:
+                            run([self.ffmpeg, "-v", "error", "-y", "-i", path, "-map", f"0:{stream['index']}", "-c:s", "copy", str(bitmap)])
                         _, duration = self.probe(path)
                         staged = work / "ocr.srt"
                         self.emit(path=path, language=lang, stage="reading_existing_bitmap_subtitles")
@@ -553,7 +592,10 @@ class Manager:
                 continue
             output = work / f"embedded-{stream['index']}.srt"
             try:
-                run([self.ffmpeg, "-v", "error", "-y", "-i", path, "-map", f"0:{stream['index']}", str(output)])
+                if self.assets is not None:
+                    output = self.assets.subtitle(stream)
+                else:
+                    run([self.ffmpeg, "-v", "error", "-y", "-i", path, "-map", f"0:{stream['index']}", str(output)])
             except Review:
                 continue
             yield output, {"source": "embedded", "source_id": f"embedded:{stream['index']}"}
@@ -603,7 +645,7 @@ class Manager:
         aligned = work / "aligned.srt"
         tags = audio.get("tags", {})
         audio_lang = language(tags.get("language"), tags.get("title"))
-        same_language = bool(audio_lang) and base_language(audio_lang) == base_language(lang)
+        same_language = bool(audio_lang) and (audio_lang and base_language(audio_lang) == base_language(lang))
         content = {"status": "not_checked" if same_language else "translated_text_unverified"}
         timing = None
         if provenance.get("derived_from_sha"):
@@ -713,10 +755,7 @@ class Manager:
         self.emit(path=path, language=lang, stage="checking_existing_subtitles")
         original = language(item.get("OriginalLanguage"))
         audio = self.audio(streams, lang, original)
-        reference = work / f"audio-{audio['index']}.wav"
-        if not reference.exists():
-            run([self.ffmpeg, "-v", "error", "-y", "-i", path, "-map", f"0:{audio['index']}",
-                 "-vn", "-ac", "1", "-ar", "16000", str(reference)])
+        reference = self.reference(item, fp, streams, duration, audio, work)
         failures = []
         diagnostics = []
         for group in [self.local_candidates, self.provider_candidates]:
@@ -785,7 +824,7 @@ class Manager:
             return {**current, "generation_deferred": blocker}
         self.emit(path=item["Path"], language=lang, stage="last_resort_generation")
         audio = self.audio(streams, lang, language(item.get("OriginalLanguage")))
-        reference = work / f"audio-{audio['index']}.wav"
+        reference = self.reference(item, fp, streams, duration, audio, work)
         tags = audio.get("tags", {})
         audio_lang = language(tags.get("language"), tags.get("title"))
         target_audio = matches(audio_lang, lang)
@@ -857,10 +896,14 @@ class Manager:
                 if seconds < 0.1:
                     continue
                 clip = work / "paid-audio.mp3"
-                run([self.ffmpeg, "-v", "error", "-y", "-ss", str(offset), "-i", str(reference),
-                     "-t", str(seconds), "-ac", "1", "-ar", "16000", "-b:a", "64k", str(clip)])
-                content = paid.transcribe(clip, seconds, base_language(audio_lang or lang),
-                                          item["Path"] + fp + str(offset), translate=translate_audio)
+                identity = item['Path'] + fp + str(offset)
+                source_lang = base_language(audio_lang or lang)
+                content = paid.cached(paid.transcription_key(identity, source_lang, translate_audio))
+                if content is None:
+                    paid.preflight(math.ceil(seconds + 2) / 60 * .006)
+                    run([self.ffmpeg, "-v", "error", "-y", "-ss", str(offset), "-i", str(reference),
+                         "-t", str(seconds), "-ac", "1", "-ar", "16000", "-b:a", "64k", str(clip)])
+                    content = paid.transcribe(clip, seconds, source_lang, identity, translate=translate_audio)
                 chunk = pysubs2.SSAFile.from_string(content, format_="srt")
                 for cue in chunk:
                     cue.start += offset * 1000
@@ -923,7 +966,7 @@ class Manager:
             raise Review("media_changed_during_backup")
         return backup
 
-    def prune(self, item, fp, streams, duration, complete):
+    def prune(self, item, fp, streams, duration, complete, defer=False):
         path = item["Path"]
         if not self.cfg.get("prune_embedded"):
             return fp, {"status": "disabled"}
@@ -943,6 +986,8 @@ class Manager:
                 remove.append(stream["index"])
         if not remove:
             return fp, {"status": "no_change"}
+        if defer:
+            return fp, {"status": "queued_cleanup" if complete else "waiting_for_subtitles", "remove_streams": remove}
         if Path(path).suffix.lower() != ".mkv":
             return fp, {"status": "review_non_mkv", "remove_streams": remove}
         physical = backing_path(path)
@@ -1047,6 +1092,15 @@ class Manager:
         db = self.catalogue.db
         if not self.request.get("dry_run"):
             self.process_rescans()
+            # Upgrade scheduling metadata only. Keep accepted captions, paid
+            # reservations, provider proof and rejection history intact.
+            if not db.execute("SELECT 1 FROM settings WHERE key='throughput_revision'").fetchone():
+                for path, raw in db.execute("SELECT path,detail FROM media WHERE status='needs_attention'").fetchall():
+                    if any(v.get('translation_failure') == 'translation_call_limit' for v in json.loads(raw).values() if isinstance(v,dict)):
+                        db.execute("UPDATE work_queue SET available=? WHERE path=? AND kind='transcription' AND state='queued'",(time.time()+5,path))
+                db.execute("UPDATE work_queue SET priority=-1 WHERE kind='files' AND priority<2 AND path IN (SELECT path FROM media WHERE status='managed_cleanup_pending')")
+                db.execute("INSERT INTO settings VALUES('throughput_revision','1')")
+                db.commit()
             policy = json.dumps(self.languages)
             previous = db.execute("SELECT value FROM settings WHERE key='required_languages'").fetchone()
             if not previous or previous[0] != policy:
@@ -1137,7 +1191,7 @@ class Manager:
                 continue
             if feedback:
                 db.execute("DELETE FROM work_queue WHERE path=? AND kind='transcription' AND state<>'running'", (path,))
-            enqueue(db, path, fp, "files", priority=2 if feedback else (1 if retry and path == retry[0] else 0))
+            enqueue(db, path, fp, "files", priority=2 if feedback else (-1 if previous_status == 'managed_cleanup_pending' else (1 if retry and path == retry[0] else 0)))
         db.commit()
         if not self.request.get("dry_run"):
             drain(self, "files")
@@ -1150,7 +1204,41 @@ class Manager:
             except BlockingIOError:
                 return self.emit(status="transcription_already_running")
             if not self.request.get("dry_run"):
+                self.refresh_generation_resources()
                 drain(self, "transcription")
+
+    def refresh_generation_resources(self):
+        # Old queue rows predate the saved stream inventory. A bounded metadata
+        # probe upgrades them once so text translation needn't wait on a disk
+        # reader. This never changes subtitle/search acceptance or spends money.
+        db = self.catalogue.db
+        rows = db.execute("SELECT m.path,m.fingerprint,m.detail FROM media m JOIN work_queue q ON q.path=m.path "
+                          "WHERE q.kind='transcription' AND q.state='queued' AND q.available<=? AND q.resource<>'text' "
+                          "AND json_type(m.detail,'$.audio_tracks') IS NULL LIMIT ?",
+                          (time.time(),self.cfg.get('queues',{}).get('batch_size',16))).fetchall()
+        for path,fp,raw in rows:
+            detail = json.loads(raw)
+            if 'audio_tracks' in detail:
+                continue
+            try:
+                if fingerprint(path) != fp:
+                    continue
+                streams,_ = self.probe(path)
+                detail['audio_tracks'] = self.audio_tracks(streams)
+                resource = self.generation_resource(fp,detail)
+            except (OSError, Review, ValueError):
+                continue
+            db.execute("BEGIN IMMEDIATE")
+            # A concurrent file job may have refreshed feedback/provider proof.
+            updated = db.execute('UPDATE media SET detail=? WHERE path=? AND fingerprint=? AND detail=?',(json.dumps(detail),path,fp,raw)).rowcount
+            if updated:
+                db.execute("UPDATE work_queue SET resource=? WHERE path=? AND kind='transcription' AND state='queued'",(resource,path))
+            db.commit()
+
+    @staticmethod
+    def audio_tracks(streams):
+        return [{'index':s['index'],'language':language(s.get('tags',{}).get('language'),s.get('tags',{}).get('title'))}
+                for s in streams if s['codec_type'] == 'audio' and not non_dialogue_audio(s)]
 
     def process_job(self, path, expected_fp, kind):
         locks = self.catalogue.root / "jobs"
@@ -1173,12 +1261,22 @@ class Manager:
             return
         path, fp, raw, previous_detail, previous_status, checked = row
         item = json.loads(raw)
+        feedback_pending = db.execute('SELECT 1 FROM feedback WHERE path=? AND applied=0',(path,)).fetchone()
         searched_at = json.loads(previous_detail).get('sources_checked_at', checked)
         if kind == "transcription" and (checked <= 0 or time.time() - searched_at > 86400 or
-                db.execute("SELECT 1 FROM feedback WHERE path=? AND applied=0", (path,)).fetchone()):
+                feedback_pending):
             enqueue(db, path, fp, "files", priority=2)
             db.commit()
             return
+        if kind == 'transcription':
+            for lang,value in json.loads(previous_detail).items():
+                if lang not in self.languages or not isinstance(value,dict) or 'output' not in value:
+                    continue
+                accepted = self.catalogue.caption(path,fp,lang)
+                if not accepted or not Path(accepted[1]['output']).exists() or digest(accepted[1]['output']) != accepted[0]:
+                    enqueue(db,path,fp,'files',priority=2)
+                    db.commit()
+                    return
         detail = {} if kind != "transcription" else {k:v for k,v in json.loads(previous_detail).items() if k in self.languages}
         if kind == 'transcription':
             detail['sources_checked_at'] = searched_at
@@ -1190,8 +1288,20 @@ class Manager:
             streams, duration = self.probe(path)
             with tempfile.TemporaryDirectory(prefix="ownership-", dir=self.request["temp_dir"]) as directory:
                 work = Path(directory)
+                self.current_item = item
+                self.assets = MediaAssets(self, path, fp, streams, duration, work)
+                detail['audio_tracks'] = self.audio_tracks(streams)
                 for lang in self.languages:
-                    if kind == "transcription" and "output" not in detail.get(lang, {}):
+                    if kind == 'transcription':
+                        if 'output' not in detail.get(lang,{}):
+                            continue
+                        accepted = self.catalogue.caption(path,fp,lang)[1]
+                        selected = self.audio(streams,lang,language(item.get('OriginalLanguage')))
+                        if 'audio_stream' in accepted and accepted['audio_stream'] != selected['index']:
+                            enqueue(db,path,fp,'files',priority=2)
+                            db.commit()
+                            return
+                        detail[lang] = accepted
                         continue
                     stage = "acquire:" + lang
                     try:
@@ -1211,13 +1321,6 @@ class Manager:
                 for lang in sorted(self.languages, key=order) if kind != "files" else []:
                     stage = "generate:" + lang
                     try:
-                        if "output" not in detail.get(lang, {}) and not self.generation_blocker(lang, detail.get(lang, {})):
-                            audio = self.audio(streams, lang, language(item.get("OriginalLanguage")))
-                            reference = work / f"audio-{audio['index']}.wav"
-                            if not reference.exists():
-                                run([self.ffmpeg, "-v", "error", "-y", "-threads",
-                                     str(self.cfg.get("queues", {}).get("worker_threads", 2)),
-                                     "-i", path, "-map", f"0:{audio['index']}", "-vn", "-ac", "1", "-ar", "16000", str(reference)])
                         detail[lang] = self.fallback(item, fp, streams, duration, lang, detail, work)
                     except Exception as error:
                         detail[lang].update(error=str(error) if isinstance(error, Review) else "local_engine_failed", diagnostic=diagnostic(error, stage))
@@ -1227,7 +1330,8 @@ class Manager:
                 self.cleanup_sidecars(path, fp, complete)
                 stage = "embedded_cleanup"
                 try:
-                    new_fp, pruning = self.prune(item, fp, streams, duration, complete)
+                    cleanup = kind == 'files' and previous_status == 'managed_cleanup_pending' and checked > 0 and not feedback_pending
+                    new_fp, pruning = self.prune(item, fp, streams, duration, complete, not (cleanup and complete))
                 except Exception as error:
                     pruning = {"status": "retry_pending", "reason": str(error) if isinstance(error, Review) else "local_engine_failed",
                                "diagnostic": diagnostic(error, stage)}
@@ -1241,6 +1345,11 @@ class Manager:
         except Exception as error:
             detail["error"] = "local_engine_failed"
             detail["diagnostic"] = diagnostic(error, stage)
+        finally:
+            if self.assets is not None:
+                self.assets.close()
+                self.assets = None
+            self.word_samples.clear()
         # Never persist a stale success across a concurrent Radarr import.
         if Path(path).exists() and fingerprint(path) == new_fp:
             pending = db.execute("SELECT 1 FROM feedback WHERE path=? AND applied=0", (path,)).fetchone()
@@ -1248,8 +1357,13 @@ class Manager:
             maximum = max(3600, self.request.get("retry_seconds", 86400))
             delay = 0 if pending or status == "queued_transcription" else (7 * 86400 if status == "managed" else min(maximum, 3600 * 2 ** min(attempt - 1, 8)))
             action = recovery_action(detail, status)
+            if not pending and action == 'resume_translation' and any(
+                    value.get('translation_failure') == 'translation_call_limit' for value in detail.values() if isinstance(value,dict)):
+                delay = 5
+            if not pending and status == 'managed_cleanup_pending' and detail.get('track_policy',{}).get('status') == 'queued_cleanup':
+                delay = 5
             if not pending and action == "wait_for_daily_budget":
-                delay = max(delay, 86400 - time.time() % 86400 + 60)
+                delay = 86400 - time.time() % 86400 + 60
             if not pending and action in {"provider_configuration_required", "translation_requires_review"}:
                 delay = max(delay, 86400)
             detail["recovery"] = {"attempt": attempt, "retry_in_seconds": delay, "action": action}
@@ -1261,7 +1375,13 @@ class Manager:
                     db.execute("UPDATE work_queue SET state='queued',fingerprint=?,available=? WHERE path=? AND kind='transcription'",
                                (new_fp, time.time() + delay, path))
                 else:
-                    enqueue(db, path, new_fp, "transcription")
+                    enqueue(db, path, new_fp, "transcription", resource=self.generation_resource(new_fp, detail))
+                db.execute("UPDATE work_queue SET resource=? WHERE path=? AND kind='transcription'", (self.generation_resource(new_fp,detail),path))
+            if status == 'managed_cleanup_pending' and detail.get('track_policy',{}).get('status') == 'queued_cleanup':
+                if kind == 'files':
+                    db.execute("UPDATE work_queue SET state='queued',available=?,priority=-1 WHERE path=? AND kind='files'",(time.time()+delay,path))
+                else:
+                    enqueue(db,path,new_fp,'files',available=time.time()+delay,priority=-1)
             db.commit()
         self.emit(path=path, status=status, detail=detail)
         self.process_rescans()

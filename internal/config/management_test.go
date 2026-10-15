@@ -15,6 +15,13 @@ func TestManagementConfiguration(t *testing.T) {
 	}{
 		{"management:\n  enabled: true\n", false},
 		{"management:\n  min_free_gb: -1\n", false},
+		{"management:\n  media_cache_gb: -1\n", false},
+		{"management:\n  media_cache_gb: .inf\n", false},
+		{"management:\n  media_cache_gb: 101\n", false},
+		{"management:\n  queues:\n    max_disk_utilization: 101\n", false},
+		{"management:\n  queues:\n    max_disk_utilization: .nan\n", false},
+		{"management:\n  queues:\n    max_disk_await_ms: -1\n", false},
+		{"management:\n  queues:\n    max_disk_await_ms: .inf\n", false},
 		{"management:\n  paid_fallback: true\n", false},
 		{"management:\n  verification_model: large\n", false},
 		{"management:\n  verification_model: none\n", false},
