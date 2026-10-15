@@ -143,6 +143,22 @@ class ThroughputTests(unittest.TestCase):
         if self.manager.assets is not None:self.manager.assets.close()
         self.assertEqual(result['paid_failure'],'daily_paid_budget_exhausted')
 
+    def test_changed_source_audio_returns_to_files_without_searching_in_generation(self):
+        self.register(); output=self.caption()
+        data=self.manager.catalogue.caption(str(self.video),self.fp,'en')[1]
+        data['audio_stream']=99
+        self.manager.catalogue.record(str(self.video),self.fp,'en',digest(output),data)
+        db=self.manager.catalogue.db
+        detail={'en':data,'pt-PT':{'providers':{'test':'searched'}},'sources_checked_at':time.time()}
+        db.execute('UPDATE media SET checked=?,detail=?',(time.time(),json.dumps(detail)))
+        enqueue(db,str(self.video),self.fp,'transcription',resource='text'); db.commit()
+        audio={'codec_type':'audio','index':1,'tags':{'language':'eng'}}
+        with patch.object(self.manager,'probe',return_value=([audio],120)), \
+             patch.object(self.manager,'ensure',side_effect=AssertionError('generation acquired subtitles')), \
+             patch.object(self.manager,'fallback',side_effect=AssertionError('stale source authorized generation')):
+            self.manager.process_job(str(self.video),self.fp,'transcription')
+        self.assertEqual(db.execute("SELECT priority FROM work_queue WHERE kind='files'").fetchone()[0],2)
+
     def test_first_pass_queues_cleanup_instead_of_rewriting_movie(self):
         self.register(); self.caption('en'); self.caption('pt-PT')
         self.manager.cfg['prune_embedded']=True

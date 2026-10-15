@@ -1213,7 +1213,8 @@ class Manager:
         # reader. This never changes subtitle/search acceptance or spends money.
         db = self.catalogue.db
         rows = db.execute("SELECT m.path,m.fingerprint,m.detail FROM media m JOIN work_queue q ON q.path=m.path "
-                          "WHERE q.kind='transcription' AND q.state='queued' AND q.available<=? AND q.resource<>'text' LIMIT ?",
+                          "WHERE q.kind='transcription' AND q.state='queued' AND q.available<=? AND q.resource<>'text' "
+                          "AND json_type(m.detail,'$.audio_tracks') IS NULL LIMIT ?",
                           (time.time(),self.cfg.get('queues',{}).get('batch_size',16))).fetchall()
         for path,fp,raw in rows:
             detail = json.loads(raw)
@@ -1291,7 +1292,16 @@ class Manager:
                 self.assets = MediaAssets(self, path, fp, streams, duration, work)
                 detail['audio_tracks'] = self.audio_tracks(streams)
                 for lang in self.languages:
-                    if kind == "transcription" and "output" not in detail.get(lang, {}):
+                    if kind == 'transcription':
+                        if 'output' not in detail.get(lang,{}):
+                            continue
+                        accepted = self.catalogue.caption(path,fp,lang)[1]
+                        selected = self.audio(streams,lang,language(item.get('OriginalLanguage')))
+                        if 'audio_stream' in accepted and accepted['audio_stream'] != selected['index']:
+                            enqueue(db,path,fp,'files',priority=2)
+                            db.commit()
+                            return
+                        detail[lang] = accepted
                         continue
                     stage = "acquire:" + lang
                     try:
