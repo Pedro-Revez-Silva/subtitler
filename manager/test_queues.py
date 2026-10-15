@@ -170,6 +170,7 @@ class QueueTests(unittest.TestCase):
         probe.write_text('#!/usr/bin/env python3\nimport json,sys,time\nfrom pathlib import Path\n'
                          + 'root=Path('+repr(str(markers))+')\n(root/Path(sys.argv[-1]).name).touch()\n'
                          + 'deadline=time.monotonic()+5\nwhile len(list(root.iterdir()))<2 and time.monotonic()<deadline: time.sleep(.02)\n'
+                         + 'assert len(list(root.iterdir()))==2, "workers did not overlap"\n'
                          + 'print(json.dumps({"streams":[{"codec_type":"audio","index":1,"codec_name":"ac3","tags":{"language":"eng"}}],"format":{"duration":"120"}}))\n')
         probe.chmod(0o755); self.request['ffprobe']=str(probe); self.manager.ffprobe=str(probe)
         second=self.root/'Other.mkv'; second.write_bytes(b'other')
@@ -177,7 +178,9 @@ class QueueTests(unittest.TestCase):
         for item in self.request['items']:
             output=Path(canonical(item['Path'],'en')); output.write_text('accepted caption')
             self.manager.catalogue.record(item['Path'],fingerprint(item['Path']),'en',digest(output),{'output':str(output),'audio_stream':1})
-        with patch('scheduler.effective_cpus',return_value=4):
+        # These jobs only inspect metadata and already-accepted sidecars. Let
+        # them share a drive while the separate disk-claim tests cover readers.
+        with patch('scheduler.effective_cpus',return_value=4), patch('scheduler.disk_resource',return_value='text'):
             self.manager.scan()
         self.assertEqual(len(list(markers.iterdir())),2)
         self.assertEqual(self.manager.catalogue.db.execute("SELECT count(*) FROM media WHERE status='managed'").fetchone()[0],2)
@@ -191,7 +194,7 @@ class AdmissionTests(unittest.TestCase):
                '/sys/fs/cgroup/memory.max':str(6*gib),
                '/sys/fs/cgroup/memory.current':str(5*gib),
                '/sys/fs/cgroup/memory.stat':f'inactive_file {3*gib}\n',
-               '/proc/pressure/io':'some avg10=0.00 avg60=0.00\n'}
+               '/proc/pressure/io':'some avg10=0.00 avg60=0.00\n', '/proc/diskstats':''}
         with patch.object(Path,'read_text',lambda path:files[str(path)]), \
              patch('scheduler.os.getloadavg',return_value=(.1,.1,.1)), patch('scheduler.os.cpu_count',return_value=4):
             sample=LoadSensor().sample()

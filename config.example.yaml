@@ -21,6 +21,7 @@ management:
   prune_embedded: true
   min_free_gb: 50
   paid_fallback: false
+  media_cache_gb: 5 # bounded reusable audio/subtitle/word-sample cache on the state disk
   paid_daily_usd: 1.0
   # File acquisition/verification and last-resort generation run independently.
   queues:
@@ -32,7 +33,9 @@ management:
     poll_seconds: 5
     min_memory_gb: 2
     max_load_per_cpu: 0.85
-    max_io_pressure: 20
+    max_io_pressure: 20 # fallback when per-disk counters are unavailable
+    max_disk_utilization: 85
+    max_disk_await_ms: 50
 
 sonarr:
   url: http://sonarr:8989
