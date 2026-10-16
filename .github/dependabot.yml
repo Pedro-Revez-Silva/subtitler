@@ -2,6 +2,11 @@ version: 2
 updates:
   - package-ecosystem: pip
     directory: /manager
+    # faster-whisper 1.2.1 still passes metadata_errors to av.open.
+    # Revisit this bound when upgrading faster-whisper to a compatible release.
+    ignore:
+      - dependency-name: av
+        versions: [">=19"]
     schedule:
       interval: weekly
       day: monday
