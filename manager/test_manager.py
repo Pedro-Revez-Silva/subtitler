@@ -371,6 +371,51 @@ class OwnershipTests(unittest.TestCase):
         self.assertEqual(status["removed_streams"], [s["index"] for s in streams if s["codec_type"] == "subtitle"])
         self.assertFalse(any(s["codec_type"] == "subtitle" for s in after))
 
+    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg required")
+    def test_remux_keeps_audio_and_rejects_a_changed_signature(self):
+        captions = self.root / "turkish.srt"
+        captions.write_text("1\n00:00:00,000 --> 00:00:01,500\nTurkish caption\n")
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=32x32:d=2",
+                        "-f", "lavfi", "-i", "anullsrc=r=16000:cl=mono", "-i", str(captions), "-t", "2",
+                        "-map", "0:v", "-map", "1:a", "-map", "1:a", "-map", "2:s",
+                        "-c:v", "ffv1", "-c:a", "pcm_s16le", "-c:s", "srt",
+                        "-metadata:s:a:0", "language=eng", "-metadata:s:a:1", "language=por",
+                        "-metadata:s:s:0", "language=tur", str(self.video)], check=True)
+        self.manager.cfg.update(prune_embedded=True, min_free_gb=1)
+        fp = fingerprint(self.video)
+        original = digest(self.video)
+        streams, duration = self.manager.probe(str(self.video))
+        audio_count = sum(1 for stream in streams if stream["codec_type"] == "audio")
+        self.assertGreater(audio_count, 0)
+        real_probe = self.manager.probe
+
+        def reject(cause, mutate):
+            def probe(path):
+                found, found_duration = real_probe(path)
+                if path == str(self.video):
+                    return found, found_duration
+                return mutate(found, found_duration)
+            with patch.object(self.manager, "probe", probe):
+                with self.assertRaises(Review) as raised:
+                    self.manager.prune(self.item, fp, streams, duration, False)
+            self.assertEqual(raised.exception.diagnostic["cause"], cause)
+            self.assertEqual(digest(self.video), original)
+            self.assertEqual(fingerprint(self.video), fp)
+            after, _ = real_probe(str(self.video))
+            self.assertEqual(sum(1 for stream in after if stream["codec_type"] == "audio"), audio_count)
+
+        def change_signature(found, found_duration):
+            for stream in found:
+                if stream.get("codec_type") != "subtitle":
+                    stream["codec_name"] = "changed"
+            return found, found_duration
+
+        def change_duration(found, found_duration):
+            return found, found_duration + 5
+
+        reject("stream_metadata_changed", change_signature)
+        reject("media_duration_changed", change_duration)
+
 
 class BudgetAndProviderTests(unittest.TestCase):
     def test_shutdown_unwinds_temporary_work(self):
