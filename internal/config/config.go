@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"math"
 	"os"
 	"strings"
 	"time"
@@ -28,20 +29,37 @@ type Config struct {
 // Management selects the persistent, provider-first subtitle owner. Paid API
 // clients are available only behind an explicit, budgeted fallback setting.
 type ManagementConfig struct {
-	Enabled                   bool    `yaml:"enabled" json:"enabled"`
-	Python                    string  `yaml:"python" json:"python"`
-	Script                    string  `yaml:"script" json:"script"`
-	StateDir                  string  `yaml:"state_dir" json:"state_dir"`
-	ProvidersFile             string  `yaml:"providers_file" json:"providers_file"`
-	QuarantineDir             string  `yaml:"quarantine_dir" json:"quarantine_dir"`
-	PruneEmbedded             bool    `yaml:"prune_embedded" json:"prune_embedded"`
-	LocalTranscription        bool    `yaml:"local_transcription" json:"local_transcription"`
-	VerifyWords               bool    `yaml:"verify_words" json:"verify_words"`
-	VerificationModel         string  `yaml:"verification_model" json:"verification_model"`
-	VerificationFallbackModel string  `yaml:"verification_fallback_model" json:"verification_fallback_model"`
-	MinFreeGB                 int     `yaml:"min_free_gb" json:"min_free_gb"`
-	PaidFallback              bool    `yaml:"paid_fallback" json:"paid_fallback"`
-	PaidDailyUSD              float64 `yaml:"paid_daily_usd" json:"paid_daily_usd"`
+	Enabled                   bool        `yaml:"enabled" json:"enabled"`
+	Python                    string      `yaml:"python" json:"python"`
+	Script                    string      `yaml:"script" json:"script"`
+	StateDir                  string      `yaml:"state_dir" json:"state_dir"`
+	ProvidersFile             string      `yaml:"providers_file" json:"providers_file"`
+	QuarantineDir             string      `yaml:"quarantine_dir" json:"quarantine_dir"`
+	PruneEmbedded             bool        `yaml:"prune_embedded" json:"prune_embedded"`
+	LocalTranscription        bool        `yaml:"local_transcription" json:"local_transcription"`
+	VerifyWords               bool        `yaml:"verify_words" json:"verify_words"`
+	VerificationModel         string      `yaml:"verification_model" json:"verification_model"`
+	VerificationFallbackModel string      `yaml:"verification_fallback_model" json:"verification_fallback_model"`
+	MinFreeGB                 int         `yaml:"min_free_gb" json:"min_free_gb"`
+	PaidFallback              bool        `yaml:"paid_fallback" json:"paid_fallback"`
+	PaidDailyUSD              float64     `yaml:"paid_daily_usd" json:"paid_daily_usd"`
+	MediaCacheGB              float64     `yaml:"media_cache_gb" json:"media_cache_gb"`
+	Queues                    QueueConfig `yaml:"queues" json:"queues"`
+}
+
+// Queue limits are admission limits: running jobs finish safely under load.
+type QueueConfig struct {
+	BatchSize            int     `yaml:"batch_size" json:"batch_size"`
+	FileWorkers          int     `yaml:"file_workers" json:"file_workers"`
+	TranscriptionWorkers int     `yaml:"transcription_workers" json:"transcription_workers"`
+	WorkerThreads        int     `yaml:"worker_threads" json:"worker_threads"`
+	Adaptive             *bool   `yaml:"adaptive" json:"adaptive"`
+	PollSeconds          int     `yaml:"poll_seconds" json:"poll_seconds"`
+	MinMemoryGB          float64 `yaml:"min_memory_gb" json:"min_memory_gb"`
+	MaxLoadPerCPU        float64 `yaml:"max_load_per_cpu" json:"max_load_per_cpu"`
+	MaxIOPressure        float64 `yaml:"max_io_pressure" json:"max_io_pressure"`
+	MaxDiskUtilization   float64 `yaml:"max_disk_utilization" json:"max_disk_utilization"`
+	MaxDiskAwaitMS       float64 `yaml:"max_disk_await_ms" json:"max_disk_await_ms"`
 }
 
 type ServiceConfig struct {
@@ -152,6 +170,44 @@ func Default() Config {
 }
 
 func (c *Config) applyDefaults() {
+	q := &c.Management.Queues
+	if q.BatchSize == 0 {
+		q.BatchSize = 16
+	}
+	if q.FileWorkers == 0 {
+		q.FileWorkers = 2
+	}
+	if q.TranscriptionWorkers == 0 {
+		q.TranscriptionWorkers = 1
+	}
+	if q.WorkerThreads == 0 {
+		q.WorkerThreads = 2
+	}
+	if q.Adaptive == nil {
+		enabled := true
+		q.Adaptive = &enabled
+	}
+	if q.PollSeconds == 0 {
+		q.PollSeconds = 5
+	}
+	if q.MinMemoryGB == 0 {
+		q.MinMemoryGB = 2
+	}
+	if q.MaxLoadPerCPU == 0 {
+		q.MaxLoadPerCPU = 0.85
+	}
+	if q.MaxIOPressure == 0 {
+		q.MaxIOPressure = 20
+	}
+	if q.MaxDiskUtilization == 0 {
+		q.MaxDiskUtilization = 85
+	}
+	if q.MaxDiskAwaitMS == 0 {
+		q.MaxDiskAwaitMS = 50
+	}
+	if c.Management.MediaCacheGB == 0 {
+		c.Management.MediaCacheGB = 5
+	}
 	if c.Management.VerificationModel == "" {
 		c.Management.VerificationModel = "base"
 	}
@@ -332,6 +388,9 @@ func (c Config) validate() error {
 	if c.Management.MinFreeGB < 0 {
 		return errors.New("management.min_free_gb cannot be negative")
 	}
+	if v := c.Management.MediaCacheGB; math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || v > 100 {
+		return errors.New("management.media_cache_gb must be finite and between 0 and 100")
+	}
 	for _, model := range []string{c.Management.VerificationModel, c.Management.VerificationFallbackModel} {
 		if model != "base" && model != "small" && model != "none" {
 			return errors.New("management verification models must be base, small, or none")
@@ -340,8 +399,19 @@ func (c Config) validate() error {
 	if c.Management.VerificationModel == "none" {
 		return errors.New("management.verification_model cannot be none")
 	}
-	if c.Management.PaidFallback && c.Management.PaidDailyUSD <= 0 {
-		return errors.New("management.paid_daily_usd must be positive when paid fallback is enabled")
+	usd := c.Management.PaidDailyUSD
+	if math.IsNaN(usd) || math.IsInf(usd, 0) || usd < 0 || (c.Management.PaidFallback && usd == 0) {
+		return errors.New("management.paid_daily_usd must be finite and positive when paid fallback is enabled")
+	}
+	q := c.Management.Queues
+	if q.BatchSize < 1 || q.BatchSize > 1000 || q.FileWorkers < 1 || q.FileWorkers > 16 || q.TranscriptionWorkers < 1 || q.TranscriptionWorkers > 16 || q.WorkerThreads < 1 || q.WorkerThreads > 16 || q.PollSeconds < 1 || q.PollSeconds > 60 {
+		return errors.New("management queue workers/threads must be 1..16 and poll_seconds 1..60")
+	}
+	if math.IsNaN(q.MinMemoryGB) || math.IsInf(q.MinMemoryGB, 0) || q.MinMemoryGB < 0 || math.IsNaN(q.MaxLoadPerCPU) || q.MaxLoadPerCPU <= 0 || q.MaxLoadPerCPU > 1 || math.IsNaN(q.MaxIOPressure) || q.MaxIOPressure <= 0 || q.MaxIOPressure > 100 {
+		return errors.New("invalid management queue memory, load, or IO pressure threshold")
+	}
+	if math.IsNaN(q.MaxDiskUtilization) || math.IsInf(q.MaxDiskUtilization, 0) || q.MaxDiskUtilization <= 0 || q.MaxDiskUtilization > 100 || math.IsNaN(q.MaxDiskAwaitMS) || math.IsInf(q.MaxDiskAwaitMS, 0) || q.MaxDiskAwaitMS <= 0 {
+		return errors.New("invalid management queue disk utilization or latency threshold")
 	}
 	return nil
 }

@@ -13,18 +13,19 @@ import (
 )
 
 func TestRunnerDoesNotSendCredentialsToStatusOrDryRun(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "unit-test-placeholder")
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 unavailable")
 	}
 	script := filepath.Join(t.TempDir(), "check.py")
-	if err := os.WriteFile(script, []byte("import json,sys\nr=json.load(sys.stdin)\nassert 'openai' not in r\nprint(r['action'])\n"), 0o600); err != nil {
+	if err := os.WriteFile(script, []byte("import json,sys,os\nr=json.load(sys.stdin)\nassert 'openai' not in r\nassert 'OPENAI_API_KEY' not in os.environ\nprint(r['action'])\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg := config.Default()
 	cfg.Management.Script = script
 	cfg.Management.PaidFallback = true
-	for _, action := range []string{"status", "scan"} {
-		cfg.DryRun = true
+	for _, action := range []string{"status", "scan", "files", "transcription"} {
+		cfg.DryRun = action != "files"
 		var out bytes.Buffer
 		if err := Run(context.Background(), cfg, action, nil, nil, &out); err != nil {
 			t.Fatal(err)

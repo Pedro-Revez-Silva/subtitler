@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 	"time"
 
@@ -29,13 +31,13 @@ func Run(ctx context.Context, cfg config.Config, action string, items []arr.Medi
 		"retry_seconds": cfg.Processing.RetryFailedAfter.Seconds(),
 		"ffmpeg":        cfg.Tools.FFmpeg, "ffprobe": cfg.Tools.FFprobe, "feedback": feedback,
 	}
-	if action == "scan" && !cfg.DryRun {
+	if (action == "scan" || action == "files" || action == "transcription") && !cfg.DryRun {
 		request["arr"] = map[string]any{
 			"radarr": map[string]string{"url": cfg.Radarr.URL, "api_key": cfg.Radarr.APIKey},
 			"sonarr": map[string]string{"url": cfg.Sonarr.URL, "api_key": cfg.Sonarr.APIKey},
 		}
 	}
-	if cfg.Management.PaidFallback && action == "scan" && !cfg.DryRun {
+	if cfg.Management.PaidFallback && (action == "scan" || action == "transcription") && !cfg.DryRun {
 		request["openai"] = map[string]string{"api_key": cfg.OpenAI.APIKey, "base_url": cfg.OpenAI.BaseURL,
 			"transcription_model": cfg.OpenAI.TranscriptionModel, "translation_model": cfg.OpenAI.TranslationModel}
 	}
@@ -44,6 +46,14 @@ func Run(ctx context.Context, cfg config.Config, action string, items []arr.Medi
 		return err
 	}
 	cmd := exec.CommandContext(ctx, python, script)
+	// The key is supplied in stdin only to permitted generation actions. File
+	// workers, status and dry runs must not inherit it through the environment.
+	cmd.Env = []string{}
+	for _, value := range os.Environ() {
+		if !strings.HasPrefix(value, "OPENAI_API_KEY=") {
+			cmd.Env = append(cmd.Env, value)
+		}
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM) }
 	cmd.WaitDelay = 10 * time.Second

@@ -33,6 +33,8 @@ class Paid:
 
     def reserve(self, amount, operation):
         day = time.strftime("%Y-%m-%d", time.gmtime())
+        if not math.isfinite(self.limit) or self.limit <= 0 or not math.isfinite(amount):
+            raise PaidUnavailable("paid_budget_configuration_invalid")
         try:
             self.db.execute("BEGIN IMMEDIATE")
             used = self.db.execute("SELECT coalesce(sum(reserved),0) FROM paid_ledger WHERE day=?", (day,)).fetchone()[0]
@@ -43,6 +45,23 @@ class Paid:
         except Exception:
             self.db.rollback()
             raise
+
+    def preflight(self, amount):
+        """Avoid preparing uploads already known to exceed today's allowance.
+
+        This is advisory: reserve() still performs the atomic check immediately
+        before the request, including when another worker spent meanwhile.
+        """
+        if not math.isfinite(self.limit) or self.limit <= 0 or not math.isfinite(amount) or amount <= 0:
+            raise PaidUnavailable('paid_budget_configuration_invalid')
+        day = time.strftime('%Y-%m-%d', time.gmtime())
+        used = self.db.execute('SELECT coalesce(sum(reserved),0) FROM paid_ledger WHERE day=?',(day,)).fetchone()[0]
+        if used + amount > self.limit:
+            raise PaidUnavailable('daily_paid_budget_exhausted')
+
+    @staticmethod
+    def transcription_key(identity, lang, translate):
+        return hashlib.sha256((identity + lang + 'whisper-1' + str(translate)).encode()).hexdigest()
 
     def cached(self, key):
         row = self.db.execute("SELECT data FROM paid_cache WHERE key=?", (key,)).fetchone()
@@ -173,7 +192,7 @@ class Paid:
     def transcribe(self, audio, seconds, lang, identity, translate=False):
         if self.config.get("transcription_model") != "whisper-1":
             raise PaidUnavailable("transcription_model_price_unknown")
-        key = hashlib.sha256((identity + lang + "whisper-1" + str(translate)).encode()).hexdigest()
+        key = self.transcription_key(identity, lang, translate)
         cached = self.cached(key)
         if cached is not None:
             return cached
