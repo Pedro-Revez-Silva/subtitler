@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 import pysubs2
 from babelfish import Language
-from manager import Catalogue, Manager, Review, canonical, digest, fingerprint, language, validate, word_metrics, text_alignment
+from manager import Catalogue, Manager, Review, SubtitleIndex, backing_path, canonical, digest, fingerprint, language, validate, word_metrics, text_alignment
 from paid import Paid, PaidUnavailable
 from providers import accepted_language, identity, safe_yify_url
 
@@ -370,6 +370,86 @@ class OwnershipTests(unittest.TestCase):
         self.assertEqual(audio_packets(self.video), before_packets)
         self.assertEqual(status["removed_streams"], [s["index"] for s in streams if s["codec_type"] == "subtitle"])
         self.assertFalse(any(s["codec_type"] == "subtitle" for s in after))
+
+    def test_subtitle_index_is_built_only_from_a_subtitle_stream(self):
+        audio = {"codec_type": "audio", "index": 1, "tags": {"language": "ita", "title": ""}}
+        subtitle = {"codec_type": "subtitle", "index": 2, "tags": {"language": "tur"}}
+        with self.assertRaises(TypeError):
+            SubtitleIndex(audio)
+        with self.assertRaises(TypeError):
+            SubtitleIndex(audio["index"])
+        self.assertEqual(SubtitleIndex(subtitle).index, subtitle["index"])
+        self.manager.cfg.update(prune_embedded=True)
+        _, status = self.manager.prune(self.item, self.fp, [audio, subtitle], 120, False, defer=True)
+        self.assertEqual(status["status"], "waiting_for_subtitles")
+        self.assertEqual(status["remove_streams"], [subtitle["index"]])
+        self.assertIs(type(status["remove_streams"][0]), int)
+
+    def italian_audio_with_removable_subtitle(self):
+        captions = self.root / "captions.srt"
+        captions.write_text("1\n00:00:00,000 --> 00:00:01,500\nRemove this caption\n")
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=32x32:d=2",
+                        "-f", "lavfi", "-i", "anullsrc=r=16000:cl=mono", "-i", str(captions), "-t", "2",
+                        "-map", "0:v", "-map", "1:a", "-map", "2:s",
+                        "-c:v", "ffv1", "-c:a", "pcm_s16le", "-c:s", "srt",
+                        "-metadata:s:a:0", "language=ita", "-metadata:s:s:0", "language=tur",
+                        str(self.video)], check=True)
+        self.manager.cfg.update(prune_embedded=True)
+        streams, duration = self.manager.probe(str(self.video))
+        audio = next(s for s in streams if s["codec_type"] == "audio")
+        self.assertEqual(audio.get("tags", {}).get("language"), "ita")
+        self.assertEqual(audio.get("tags", {}).get("title", ""), "")
+        return streams, duration, fingerprint(self.video)
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg required")
+    def test_prune_keeps_italian_audio_with_an_empty_title(self):
+        streams, duration, fp = self.italian_audio_with_removable_subtitle()
+        subtitle = next(s for s in streams if s["codec_type"] == "subtitle")
+        audio = next(s for s in streams if s["codec_type"] == "audio")
+
+        def audio_packet(path):
+            return subprocess.check_output(["ffmpeg", "-v", "error", "-i", str(path), "-map", "0:a:0",
+                                             "-c", "copy", "-f", "hash", "-hash", "sha256", "-"])
+
+        before = audio_packet(self.video)
+        new_fp, status = self.manager.prune(self.item, fp, streams, duration, False)
+        self.assertEqual(status["status"], "remuxed")
+        self.assertEqual(status["removed_streams"], [subtitle["index"]])
+        self.assertTrue(all(type(index) is int for index in status["removed_streams"]))
+        self.assertNotEqual(new_fp, fp)
+        after, _ = self.manager.probe(str(self.video))
+        self.assertEqual([(s["codec_name"], s.get("tags", {}).get("language"), s.get("tags", {}).get("title", ""))
+                          for s in after if s["codec_type"] == "audio"],
+                         [(audio["codec_name"], "ita", "")])
+        self.assertFalse(any(s["codec_type"] == "subtitle" for s in after))
+        self.assertEqual(audio_packet(self.video), before)
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg required")
+    def test_remux_rejects_a_raw_int_or_audio_index_without_replacing_the_file(self):
+        streams, duration, fp = self.italian_audio_with_removable_subtitle()
+        audio = next(s for s in streams if s["codec_type"] == "audio")
+        subtitle = next(s for s in streams if s["codec_type"] == "subtitle")
+        original = digest(self.video)
+        physical = backing_path(self.video)
+        with self.assertRaises(TypeError):
+            SubtitleIndex(audio)
+        for remove in ([subtitle["index"]], [audio["index"]]):
+            with self.assertRaises(TypeError):
+                self.manager.remux(self.item, fp, streams, duration, remove, physical)
+            self.assertEqual(digest(self.video), original)
+        after, _ = self.manager.probe(str(self.video))
+        self.assertTrue(any(s["codec_type"] == "subtitle" for s in after))
+        kept = next(s for s in after if s["codec_type"] == "audio")
+        self.assertEqual(kept.get("tags", {}).get("language"), "ita")
+        self.assertEqual(kept.get("tags", {}).get("title", ""), "")
+        new_fp, status = self.manager.remux(self.item, fp, streams, duration, [SubtitleIndex(subtitle)], physical)
+        self.assertEqual(status["status"], "remuxed")
+        self.assertEqual(status["removed_streams"], [subtitle["index"]])
+        self.assertIs(type(status["removed_streams"][0]), int)
+        self.assertNotEqual(new_fp, fp)
+        replaced, _ = self.manager.probe(str(self.video))
+        self.assertFalse(any(s["codec_type"] == "subtitle" for s in replaced))
+        self.assertEqual(next(s.get("tags", {}).get("language") for s in replaced if s["codec_type"] == "audio"), "ita")
 
 
 class BudgetAndProviderTests(unittest.TestCase):

@@ -87,6 +87,29 @@ def stream_signature(stream):
             bool(flags.get("default")), bool(flags.get("forced")), bool(flags.get("attached_pic")))
 
 
+class SubtitleIndex:
+    """Container index of one subtitle stream.
+
+    prune builds this from a probed subtitle stream. remux accepts this value
+    and refuses a raw int. An audio stream cannot be constructed. stream_signature
+    stays the post-remux counter and is not this id.
+    """
+
+    def __init__(self, stream):
+        if not isinstance(stream, dict) or stream.get("codec_type") != "subtitle" or type(stream.get("index")) is not int:
+            raise TypeError("subtitle index requires a subtitle stream")
+        self.index = stream["index"]
+
+    def __eq__(self, other):
+        return isinstance(other, SubtitleIndex) and self.index == other.index
+
+    def __hash__(self):
+        return hash(self.index)
+
+    def __repr__(self):
+        return f"SubtitleIndex({self.index})"
+
+
 def recovery_action(detail, status):
     if status == "queued_transcription": return "run_transcription"
     if status == "managed": return "periodic_recheck"
@@ -983,13 +1006,14 @@ class Manager:
             unwanted = not permitted and (complete or not uncertain)
             duplicate = complete and permitted and not stream.get("disposition", {}).get("forced")
             if unwanted or duplicate:
-                remove.append(stream["index"])
+                remove.append(SubtitleIndex(stream))
         if not remove:
             return fp, {"status": "no_change"}
+        indexes = [value.index for value in remove]
         if defer:
-            return fp, {"status": "queued_cleanup" if complete else "waiting_for_subtitles", "remove_streams": remove}
+            return fp, {"status": "queued_cleanup" if complete else "waiting_for_subtitles", "remove_streams": indexes}
         if Path(path).suffix.lower() != ".mkv":
-            return fp, {"status": "review_non_mkv", "remove_streams": remove}
+            return fp, {"status": "review_non_mkv", "remove_streams": indexes}
         physical = backing_path(path)
         locks = self.catalogue.root / "media-writes"
         locks.mkdir(exist_ok=True)
@@ -1000,6 +1024,11 @@ class Manager:
             return self.remux(item, fp, streams, duration, remove, physical)
 
     def remux(self, item, fp, streams, duration, remove, physical):
+        # A raw int is not a subtitle id. Refuse it before a command is built
+        # or the source file is replaced.
+        if any(type(value) is not SubtitleIndex for value in remove):
+            raise TypeError("remux accepts subtitle indexes")
+        remove = [value.index for value in remove]
         path = item["Path"]
         if fingerprint(path) != fp:
             raise Review("media_changed_during_work")
