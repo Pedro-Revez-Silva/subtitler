@@ -1015,6 +1015,7 @@ class Manager:
             if fingerprint(path) != fp:
                 raise Review("media_changed_during_work")
             backup = self.backup_link(path, fp, backup)
+            subtitle_indexes = [s["index"] for s in streams if s["codec_type"] == "subtitle" and s["index"] in remove]
             mkvmerge = shutil.which("mkvmerge")
             if mkvmerge:
                 inventory = json.loads(run([mkvmerge, "-J", path]))
@@ -1022,17 +1023,17 @@ class Manager:
                 subtitles = [s for s in streams if s["codec_type"] == "subtitle"]
                 if len(tracks) != len(subtitles):
                     raise Review("remux_track_mapping_inconclusive")
-                ids = [str(t["id"]) for t, s in zip(tracks, subtitles) if s["index"] in remove]
+                ids = [str(t["id"]) for t, s in zip(tracks, subtitles) if s["index"] in subtitle_indexes]
                 selection = ["--no-subtitles"] if len(ids) == len(tracks) else ["--subtitle-tracks", "!" + ",".join(ids)]
                 run([mkvmerge, "-o", str(staged), *selection, path], accepted_codes=(0, 1))
             else:
                 command = [self.ffmpeg, "-v", "error", "-y", "-i", path, "-map", "0"]
-                for index in remove:
+                for index in subtitle_indexes:
                     command += ["-map", f"-0:{index}"]
                 command += ["-map_metadata", "0", "-map_chapters", "0", "-c", "copy", "-f", "matroska", str(staged)]
                 run(command)
             after, new_duration = self.probe(str(staged))
-            expected = Counter(stream_signature(s) for s in streams if s["index"] not in remove)
+            expected = Counter(stream_signature(s) for s in streams if s["index"] not in subtitle_indexes)
             actual = Counter(stream_signature(s) for s in after)
             if expected != actual:
                 raise Review("remux_validation_failed", {"cause": "stream_metadata_changed"})
