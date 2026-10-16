@@ -30,10 +30,10 @@ export WORK EVIDENCE CAPTURE
 Note the three values. Export the same values in every later shell. Running this block again starts a new run.
 
 2. Export `GOTOOLCHAIN=go1.26.9` and `SUBTITLER_TELEMETRY=off`. Run `unset OPENAI_API_KEY`. Go must be able to fetch `go1.26.9`. Do not `pip install` `manager/requirements.txt`.
-3. From the repo root, record the run. Set `DELIVERY` to `control-cli` or `direct`, as described in Drive.
+3. From the repo root, record the run. The block sets `DELIVERY` to `control-cli` when `control-cli` resolves on `PATH`, and to `direct` otherwise. Deliver every later command the way it records.
 
 ```bash
-DELIVERY=direct
+if command -v control-cli >/dev/null 2>&1; then DELIVERY=control-cli; else DELIVERY=direct; fi
 printf 'work=%s\ncommit=%s\ndelivery=%s\n' "$WORK" "$(git describe --always --dirty --abbrev=40)" "$DELIVERY" >"$EVIDENCE/run.txt"
 ```
 
@@ -71,15 +71,9 @@ The instance is worth driving when doctor exits 0 and stdout contains `media too
 
 ## Drive
 
-Deliver each recipe command through `control-cli` from `cursor-team-kit` when it is available. `control-cli` is not in this repo. When it is absent, run the same command directly in a shell. Record that choice as `delivery` in `$EVIDENCE/run.txt`. Either way, judge the run by the command's exit code and stdout.
+Deliver each recipe command through `control-cli` from `cursor-team-kit` when `control-cli` resolves on `PATH`. `control-cli` is not in this repo. When it is absent, run the same command directly in a shell. Launch step 3 records that choice as `delivery` in `$EVIDENCE/run.txt`. Either way, judge the run by the command's exit code and stdout.
 
-The offline command that finishes is the first step of [inspect.md](features/inspect.md). Run it once. That capture serves both this check and the inspect recipe.
-
-```bash
-"$CAPTURE" inspect inspect-audio "$WORK/subtitler" inspect -config "$WORK/config.yaml" "$WORK/tone.mkv"
-```
-
-Pass when the exit code is 0 and stdout contains `audio stream` and `codec=aac`.
+The feature files own every recipe command. This section has none of its own. Doctor has already delivered [doctor.md](features/doctor.md). Do not deliver it again. Follow the other recipes once each, in this order: [inspect.md](features/inspect.md), [generate.md](features/generate.md), [scan.md](features/scan.md), [status.md](features/status.md). The `inspect-audio` step in inspect.md is the offline command that finishes, so it is the first proof that the instance works.
 
 Errors from this CLI are slog lines on stdout. Read-only diagnostics are the exit code, stdout, stderr, and `find` of `$WORK`.
 

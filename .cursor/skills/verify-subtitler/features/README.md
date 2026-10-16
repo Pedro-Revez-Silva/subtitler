@@ -10,12 +10,13 @@ This directory is the maintained source for verifying the Subtitler CLI. Read th
 - `GOTOOLCHAIN` is `go1.26.9`. `SUBTITLER_TELEMETRY` is `off`. `OPENAI_API_KEY` is unset.
 - `ffmpeg`, `ffprobe`, and `jq` resolve on `PATH`.
 - Doctor has exited 0, and stdout contains `media tools available`.
-- Deliver each command through `control-cli` when it is available. When it is absent, run the same command directly in a shell. Record which one in `$EVIDENCE/run.txt`. Do not drive a work directory this run did not create.
+- Deliver each command through `control-cli` when it resolves on `PATH`. When it is absent, run the same command directly in a shell. Launch records which one in `$EVIDENCE/run.txt`. Do not drive a work directory this run did not create.
 
 ## Driving conventions
 
 - Start every recipe from the baseline state unless its preconditions say otherwise.
 - Treat every command as literal. Keep the paths and flags unchanged.
+- Deliver each command once, in the step that names it. `SKILL.md` has no recipe commands of its own.
 - Errors from the CLI are slog lines on stdout.
 - Read-only diagnostics are the exit code, stdout, stderr, and `find` of `$WORK`.
 - Cleanup deletes the files in `$WORK`, then `$WORK` itself. It must leave `$EVIDENCE` in place.
