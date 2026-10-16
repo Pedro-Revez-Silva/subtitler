@@ -4,12 +4,13 @@ This directory is the maintained source for verifying the Subtitler CLI. Read th
 
 ## Baseline preconditions
 
-- `WORK` is an empty directory outside the repo root, and the current directory for each command is `$WORK`.
-- Launch has built `$WORK/subtitler`, written `$WORK/tone.mkv`, and written `$WORK/config.yaml`.
+- `WORK` is a new empty directory on disk, outside the repo root. The current directory for each command is `$WORK`.
+- `EVIDENCE` is a new empty directory on disk, outside `$WORK` and outside the repo root. `CAPTURE` is the absolute path of `scripts/capture.sh`.
+- Launch has built `$WORK/subtitler`, written `$WORK/tone.mkv`, written `$WORK/config.yaml` and `$WORK/generate-config.yaml`, and written `$EVIDENCE/run.txt`.
 - `GOTOOLCHAIN` is `go1.26.9`. `SUBTITLER_TELEMETRY` is `off`. `OPENAI_API_KEY` is unset.
-- `ffmpeg` and `ffprobe` resolve on `PATH`.
+- `ffmpeg`, `ffprobe`, and `jq` resolve on `PATH`.
 - Doctor has exited 0, and stdout contains `media tools available`.
-- Deliver commands through `control-cli`. Do not drive a work directory this run did not create.
+- Deliver each command through `control-cli` when it is available. When it is absent, run the same command directly in a shell. Record which one in `$EVIDENCE/run.txt`. Do not drive a work directory this run did not create.
 
 ## Driving conventions
 
@@ -17,15 +18,16 @@ This directory is the maintained source for verifying the Subtitler CLI. Read th
 - Treat every command as literal. Keep the paths and flags unchanged.
 - Errors from the CLI are slog lines on stdout.
 - Read-only diagnostics are the exit code, stdout, stderr, and `find` of `$WORK`.
-- Cleanup may delete the tone file, the config, the binary, and the state file. It must leave `/tmp/verify-subtitler-evidence` in place.
+- Cleanup deletes the files in `$WORK`, then `$WORK` itself. It must leave `$EVIDENCE` in place.
 
 ## Proof and failure reporting
 
-- Capture the command and the files it changed, not only the exit code.
-- CLI proof includes the command, stdout, stderr, and the exit code.
-- Record the feature file with every artifact.
+- Wrap each recipe command in `"$CAPTURE" FEATURE SUB_FEATURE`. It saves `$EVIDENCE/FEATURE/SUB_FEATURE.{cmd,rc,stdout,stderr,find}`.
+- `FEATURE` is the feature file name without `.md`. That directory name records the feature file for every artifact.
+- Capture the command and the files it changed, not only the exit code. The `.find` listing shows the files.
 - Report an unreachable command with the command you ran and the unmet precondition.
 - A missing precondition is a failed journey. Do not report that journey as skipped, and do not report it as passed through a different command.
+- A recipe that expects a failure names its exit code and message. A different exit code or message is a broken run, not the expected gap. Re-run doctor, and report the failure you saw.
 
 ## Feature entry contract
 

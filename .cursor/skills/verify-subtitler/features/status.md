@@ -16,13 +16,14 @@ Preconditions:
 
 - `management.enabled` is true in the config under test.
 - The Python owner from `manager/requirements.txt` is installed. The default script path is `/opt/subtitler/manager.py` unless config sets `management.script`.
-- Launch does not install those packages. The verification report did not run `status`.
+- Launch sets neither, so these preconditions are unmet.
 
-- **Read status.** Deliver `"$WORK/subtitler" status -config "$WORK/config.yaml"` through `control-cli`. The boot config leaves management off, and Launch does not install the Python owner, so this journey fails. Save the failure. Do not replace the command with a different one.
-- **Proof.** Save the command, the exit code, and stdout under `/tmp/verify-subtitler-evidence`. Record the unmet precondition beside them. Do not record the journey as passed.
+- **Read status.** Deliver `"$CAPTURE" status status-read "$WORK/subtitler" status -config "$WORK/config.yaml"`. The journey fails. Do not replace the command with a different one.
+- **Expected failure.** The exit code is 1. Stdout contains `level=ERROR msg="management command failed" error="management is not enabled"`. Only that exit code and line show the unmet precondition. Any other result is a broken run. Re-run doctor and report what you saw.
+- **Proof.** `capture.sh` saved `$EVIDENCE/status/status-read.*`. Write the unmet precondition to `$EVIDENCE/status/status-read.unmet`. Record the journey as failed, not passed.
 
 ## Gotchas
 
-- The verification report did not run `status`. The boot config leaves management off. Launch does not install the Python owner. That gap is a failed journey, not a skipped assertion.
+- The boot config leaves management off. Launch does not install the Python owner. That gap is a failed journey, not a skipped assertion.
 - Do not set `management.enabled` to make this journey pass. Do not `pip install` `manager/requirements.txt` to make this journey pass.
 - Status takes no file arguments. The CLI rejects a path on this command.

@@ -15,13 +15,14 @@ Scan lists planned subtitle work for the Sonarr library and the Radarr library.
 Preconditions:
 
 - `$WORK/config.yaml` sets a Sonarr URL or a Radarr URL.
-- The verification report did not meet this precondition, and it did not run this command.
+- The Launch config sets neither, so this precondition is unmet.
 
-- **Dry-run scan.** Deliver `"$WORK/subtitler" scan -config "$WORK/config.yaml" -dry-run` through `control-cli`. The boot config has no Sonarr URL and no Radarr URL, so this journey fails. Save the failure. Do not replace the command with a different one.
-- **Proof.** Save the command, the exit code, and stdout under `/tmp/verify-subtitler-evidence`. Record the unmet precondition beside them. Do not record the journey as passed.
+- **Dry-run scan.** Deliver `"$CAPTURE" scan scan-dry-run "$WORK/subtitler" scan -config "$WORK/config.yaml" -dry-run`. The journey fails. Do not replace the command with a different one.
+- **Expected failure.** The exit code is 1. Stdout contains `level=ERROR msg="scan failed" error="at least one of radarr.url or sonarr.url is required for scanning"`. Only that exit code and line show the unmet precondition. Any other result is a broken run. Re-run doctor and report what you saw.
+- **Proof.** `capture.sh` saved `$EVIDENCE/scan/scan-dry-run.*`. Write the unmet precondition to `$EVIDENCE/scan/scan-dry-run.unmet`. Record the journey as failed, not passed.
 
 ## Gotchas
 
-- The verification report did not run `scan -dry-run`. The missing Sonarr URL and Radarr URL are a failed journey, not a skipped assertion.
+- The missing Sonarr URL and Radarr URL are a failed journey, not a skipped assertion.
 - Do not add an ARR URL to make this journey pass.
 - Scan rejects a command that passes both `-process` and `-dry-run`.

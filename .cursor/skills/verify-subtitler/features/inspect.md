@@ -19,11 +19,11 @@ Preconditions:
 - Doctor has exited 0 and stdout contains `media tools available`.
 - `$WORK/tone.mkv` exists.
 - `$WORK/config.yaml` exists, with `dry_run: true` and `telemetry.enabled: false`.
-- The current directory is `$WORK`.
 
-- **Inspect the tone file.** Deliver `"$WORK/subtitler" inspect -config "$WORK/config.yaml" "$WORK/tone.mkv"` through `control-cli`. The exit code is 0. Stdout contains `audio stream` and `codec=aac`.
-- **Missing config.** Deliver `"$WORK/subtitler" inspect -config "$WORK/missing-config.yaml" "$WORK/tone.mkv"` through `control-cli`. The exit code is 1. Stdout contains `no such file or directory`.
-- **Proof.** Save the command, the exit code, stdout, and stderr under `/tmp/verify-subtitler-evidence`. Run `find "$WORK" -print`. The tone file is still present, and no `.srt` appears.
+- **Inspect the tone file.** Deliver `"$CAPTURE" inspect inspect-audio "$WORK/subtitler" inspect -config "$WORK/config.yaml" "$WORK/tone.mkv"`. The exit code is 0. Stdout contains `audio stream` and `codec=aac`.
+- **No sidecar.** Read `$EVIDENCE/inspect/inspect-audio.stdout`. It contains no `sidecar subtitle` line.
+- **Missing config.** Deliver `"$CAPTURE" inspect inspect-missing-config "$WORK/subtitler" inspect -config "$WORK/missing-config.yaml" "$WORK/tone.mkv"`. The exit code is 1. Stdout contains `level=ERROR msg="inspect failed"` and `no such file or directory`.
+- **Proof.** `capture.sh` saved both commands as `$EVIDENCE/inspect/inspect-audio.*` and `$EVIDENCE/inspect/inspect-missing-config.*`. Each `.find` listing still has `$WORK/tone.mkv` and has no `.srt`.
 
 ## Gotchas
 
