@@ -66,9 +66,32 @@ This is an early, working implementation — useful today, still evolving:
 - periodic daemon scans that process only missing-subtitle jobs, with a per-scan job limit
 - a one-time anonymous installation signal (see [Telemetry](#-telemetry))
 
-Embedded subtitle *removal* is intentionally not implemented because it requires remuxing media
-files. Embedded *extraction* is supported, but audio-first generation is the default because it
-ties subtitle timings to the audio track being watched.
+The optional `management.enabled` engine owns the languages in `subtitles.required_languages`.
+It checks existing subtitles, searches configured providers, verifies downloads, and uses local
+or budgeted paid generation only after those sources are exhausted. Regional requests require
+regional evidence: generic Portuguese or Brazilian Portuguese does not satisfy `pt-PT`.
+
+With `management.prune_embedded`, it removes unwanted or replaced subtitle tracks using
+Matroska stream copying, preserving all audio, video, cover art, chapters, and a backup of the
+original file. Native installations should install `mkvmerge` for reliable Matroska cleanup;
+the Docker image includes it. Accepted subtitles remain available if cleanup needs a retry.
+
+### Failure recovery
+
+Run `subtitler status -config config.yaml` for each file's verification evidence, sanitized
+diagnostics, next retry time, and recovery action. `managed_cleanup_pending` means the required
+subtitles exist but embedded cleanup has not completed. `managed` means the configured checks
+passed; it is not a guarantee that every translated word or every minute was independently checked.
+
+Inconclusive local word checks can escalate from `management.verification_model: base` to
+`verification_fallback_model: small` using longer samples. Set the fallback to `none` to disable
+that escalation. Uncertain candidates are temporarily deferred so other provider results can
+be tried; uncertainty does not silently become a successful check or trigger paid generation.
+
+Translation retries split invalid batches, retain validated chunks across restarts, and reserve
+budget before each request. Requests are bounded per job and by `management.paid_daily_usd`.
+Failures retry with increasing delays; due retries receive a scan slot while the first library
+pass continues. Credential, quota, refusal, and budget failures have distinct recovery actions.
 
 OpenAI transcription uploads are limited to 25 MB. Subtitler extracts mono 64 kbps MP3 audio and
 defaults to 20 minute chunks with a 24 MB safety ceiling, then validates each chunk as it is
@@ -215,6 +238,12 @@ letting the scanner process every missing item it finds in one scan.
 
 ### Important choices
 
+For the persistent [subtitle owner](manager/README.md), `subtitles.required_languages`
+selects every managed language, including provider searches, checks and cleanup.
+It is configurable per installation: `[fr, es, de]` and `[pt-BR]` are valid choices.
+Use `pt-PT` when Portugal Portuguese is required; generic `pt` accepts regional
+variants. Changing the setting requeues previously checked media.
+
 ```yaml
 subtitles:
   required_languages: [en, pt-PT]
@@ -306,7 +335,7 @@ hostnames. Sentry error/panic capture is off by default because arbitrary errors
 
 ## 🛠️ Local development
 
-You need Go 1.25.11 or newer plus `ffmpeg`/`ffprobe` on the host for local non-Docker runs.
+You need Go 1.26.9 or newer plus `ffmpeg`/`ffprobe` on the host for local non-Docker runs. Persistent subtitle ownership also requires the dependencies and setup in [manager/README.md](manager/README.md).
 
 ```bash
 export OPENAI_API_KEY=...

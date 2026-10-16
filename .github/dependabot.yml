@@ -1,5 +1,17 @@
 version: 2
 updates:
+  - package-ecosystem: pip
+    directory: /manager
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:30"
+      timezone: Europe/Lisbon
+    groups:
+      subtitle-dependencies:
+        patterns:
+          - "*"
+
   - package-ecosystem: gomod
     directory: /
     schedule:

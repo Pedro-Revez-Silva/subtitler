@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	sublang "github.com/Pedro-Revez-Silva/subtitler/internal/language"
 )
 
 var Extensions = []string{".srt", ".vtt", ".ass", ".ssa", ".sub", ".idx"}
@@ -62,6 +64,9 @@ func OutputPath(videoPath, language, title string) string {
 	if title != "" {
 		parts = append(parts, title)
 	}
+	if region := normalizeLanguage(language); strings.Contains(region, "-") {
+		parts = append(parts, region)
+	}
 	parts = append(parts, jellyfinLanguage(language), "srt")
 	return filepath.Join(dir, strings.Join(parts, "."))
 }
@@ -105,26 +110,18 @@ func normalizeLanguage(value string) string {
 	case "de", "ger", "deu", "german":
 		return "de"
 	default:
-		if len(value) == 2 {
-			return value
+		if code, err := sublang.Normalize(value); err == nil {
+			return code
 		}
 		return ""
 	}
 }
 
 func jellyfinLanguage(language string) string {
-	switch normalizeLanguage(language) {
-	case "pt-PT", "pt-BR", "pt":
-		return "pt"
-	case "en":
-		return "en"
-	default:
-		language = strings.ToLower(strings.TrimSpace(language))
-		if idx := strings.Index(language, "-"); idx > 0 {
-			return language[:idx]
-		}
-		return language
+	if normalized := normalizeLanguage(language); normalized != "" {
+		return strings.Split(normalized, "-")[0]
 	}
+	return strings.ToLower(strings.TrimSpace(language))
 }
 
 func safeToken(value string) string {

@@ -32,6 +32,11 @@ func main() {
 	switch os.Args[1] {
 	case "version":
 		fmt.Println(version)
+	case "status", "report":
+		if err := runManagement(ctx, os.Args[1], os.Args[2:]); err != nil {
+			logger.Error("management command failed", "error", err)
+			os.Exit(1)
+		}
 	case "daemon":
 		if err := runDaemon(ctx, logger, os.Args[2:]); err != nil {
 			logger.Error("daemon failed", "error", err)
@@ -84,6 +89,11 @@ func runDaemon(ctx context.Context, logger *slog.Logger, args []string) error {
 	}
 
 	logger.Info("subtitler daemon started", "scan_interval", interval, "dry_run", cfg.DryRun)
+	if cfg.Management.Enabled && !cfg.DryRun {
+		service.RunOwnershipDaemon(ctx)
+		logger.Info("subtitler daemon stopped")
+		return nil
+	}
 	for {
 		if err := service.ScanAndProcess(ctx); err != nil {
 			logger.Error("scan cycle failed", "error", err)
@@ -259,5 +269,7 @@ Usage:
   subtitler generate [-config config.yaml] [-langs en,pt-PT] /path/to/video.mkv
   subtitler inspect  -config config.yaml /path/to/video.mkv
   subtitler doctor   -config config.yaml
+  subtitler status   -config config.yaml
+  subtitler report   -config config.yaml -lang pt-PT -reason out_of_sync /path/to/video.mkv
   subtitler version`)
 }

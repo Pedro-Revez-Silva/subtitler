@@ -43,21 +43,32 @@ func TestFindSidecarsMatchesMediaBasename(t *testing.T) {
 
 func TestOutputPathIncludesTitleAndJellyfinLanguage(t *testing.T) {
 	path := OutputPath("/media/Show/Episode.mkv", "pt-PT", "Subtitler")
-	want := "/media/Show/Episode.subtitler.pt.srt"
+	want := "/media/Show/Episode.subtitler.pt-PT.pt.srt"
 	if path != want {
 		t.Fatalf("expected %q, got %q", want, path)
 	}
 }
 
+func TestPortugueseOutputPathsCannotCollide(t *testing.T) {
+	pt := OutputPath("/media/Movie.mkv", "pt-PT", "subtitler")
+	br := OutputPath("/media/Movie.mkv", "pt-BR", "subtitler")
+	if pt == br {
+		t.Fatal("regional Portuguese files collide")
+	}
+	if got := detectLanguage([]string{"subtitler", "pt-PT", "pt"}); got != "pt-PT" {
+		t.Fatalf("lost locale: %s", got)
+	}
+}
+
 func TestOutputPathSanitizesTitleAndLanguageFallback(t *testing.T) {
 	path := OutputPath("/media/Show/Episode.mkv", "es-MX", ` My: Bad/Title? `)
-	want := "/media/Show/Episode.my-bad-title.es.srt"
+	want := "/media/Show/Episode.my-bad-title.es-MX.es.srt"
 	if path != want {
 		t.Fatalf("expected %q, got %q", want, path)
 	}
 
 	path = OutputPath("/media/Show/Episode.mkv", "jpn", "")
-	want = "/media/Show/Episode.jpn.srt"
+	want = "/media/Show/Episode.ja.srt"
 	if path != want {
 		t.Fatalf("expected %q, got %q", want, path)
 	}
@@ -74,6 +85,9 @@ func TestNormalizeLanguageVariants(t *testing.T) {
 		"fra":        "fr",
 		"deu":        "de",
 		"it":         "it",
+		"fr_CA":      "fr-CA",
+		"es-MX":      "es-MX",
+		"zh-Hant":    "zh-Hant",
 		"not-a-lang": "",
 	}
 	for input, want := range tests {

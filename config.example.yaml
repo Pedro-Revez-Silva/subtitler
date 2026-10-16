@@ -1,10 +1,41 @@
 dry_run: true
 state_path: /data/subtitler-state.json
-temp_dir: /tmp
+temp_dir: /data/tmp
 
 tools:
   ffmpeg: ffmpeg
   ffprobe: ffprobe
+
+# Optional persistent ownership engine. Its Docker image includes the local
+# tools; native installations also need manager/requirements.txt.
+management:
+  enabled: false
+  state_dir: /data/ownership
+  providers_file: /data/providers.json
+  quarantine_dir: /media/agent-backups/subtitler
+  verify_words: true
+  verification_model: base
+  # A stronger local check for inconclusive samples; 'none' disables escalation.
+  verification_fallback_model: small
+  local_transcription: true
+  prune_embedded: true
+  min_free_gb: 50
+  paid_fallback: false
+  media_cache_gb: 5 # bounded reusable audio/subtitle/word-sample cache on the state disk
+  paid_daily_usd: 1.0
+  # File acquisition/verification and last-resort generation run independently.
+  queues:
+    file_workers: 2
+    transcription_workers: 1
+    worker_threads: 2
+    batch_size: 16
+    adaptive: true
+    poll_seconds: 5
+    min_memory_gb: 2
+    max_load_per_cpu: 0.85
+    max_io_pressure: 20 # fallback when per-disk counters are unavailable
+    max_disk_utilization: 85
+    max_disk_await_ms: 50
 
 sonarr:
   url: http://sonarr:8989
@@ -37,6 +68,9 @@ telemetry:
   release: ""
 
 subtitles:
+  # Managed languages drive acquisition, verification, generation and cleanup.
+  # Use ISO tags: [fr, es, de], [pt-BR], or a regional/script tag such as zh-Hant.
+  # Generic pt accepts any Portuguese variant; pt-PT requires Portugal evidence.
   required_languages:
     - en
     - pt-PT
@@ -75,5 +109,5 @@ processing:
   concurrency: 1
   retry_failed_after: 24h
   max_attempts: 3
-  # 0 means unlimited. Start low to control OpenAI spend during first library runs.
-  max_jobs_per_scan: 1
+  # Ownership uses queue batches; legacy generation treats zero as unlimited.
+  max_jobs_per_scan: 0 # Use the queue batch size; a positive value caps each queue cycle.
