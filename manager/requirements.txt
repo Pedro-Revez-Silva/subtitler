@@ -4,5 +4,8 @@ faster-whisper==1.2.1
 # PyAV 19 removed metadata_errors, still used by faster-whisper 1.2.1.
 av==18.1.0
 PyYAML==6.0.3
-Pillow==12.3.0
+Pillow==13.0.0
 langdetect==1.0.9
+
+# Distrust emSign intermediates with compromised keys.
+certifi>=2026.10.19

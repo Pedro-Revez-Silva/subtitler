@@ -1,4 +1,4 @@
-FROM golang:1.27.2-alpine AS build
+FROM golang:1.27.3-alpine AS build
 
 WORKDIR /src
 COPY go.mod go.sum* ./
@@ -11,7 +11,7 @@ FROM python:3.14-slim-bookworm
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg mkvtoolnix ca-certificates libgomp1 tesseract-ocr tesseract-ocr-eng tesseract-ocr-por \
     && rm -rf /var/lib/apt/lists/*
 COPY manager/requirements.txt /opt/subtitler/requirements.txt
-RUN pip install --no-cache-dir -r /opt/subtitler/requirements.txt
+RUN pip install --no-cache-dir --upgrade pip==26.2.2 && pip install --no-cache-dir -r /opt/subtitler/requirements.txt
 COPY manager /opt/subtitler
 COPY --from=build /out/subtitler /usr/local/bin/subtitler
 
