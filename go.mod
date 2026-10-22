@@ -1,6 +1,6 @@
 module github.com/Pedro-Revez-Silva/subtitler
 
-go 1.26.9
+go 1.27.3
 
 require (
 	github.com/getsentry/sentry-go v0.50.0
