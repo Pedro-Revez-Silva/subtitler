@@ -338,6 +338,13 @@ class OwnershipTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg required")
     def test_subtitle_remux_preserves_every_audio_track_and_seed_inode(self):
+        self.check_subtitle_remux(False)
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg required")
+    def test_full_media_backup_can_be_retained_explicitly(self):
+        self.check_subtitle_remux(True)
+
+    def check_subtitle_remux(self, retain):
         captions = self.root / "turkish.srt"
         captions.write_text("1\n00:00:00,000 --> 00:00:01,500\nTurkish caption\n")
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=32x32:d=2",
@@ -351,7 +358,7 @@ class OwnershipTests(unittest.TestCase):
         seed = self.root / "seed.mkv"
         os.link(self.video, seed)
         original_sha = digest(seed)
-        self.manager.cfg.update(prune_audio=True, prune_embedded=True)
+        self.manager.cfg.update(prune_audio=True, prune_embedded=True, retain_media_backups=retain)
         streams, duration = self.manager.probe(str(self.video))
         def audio_packets(path):
             return [subprocess.check_output(["ffmpeg", "-v", "error", "-i", str(path), "-map", f"0:a:{index}",
@@ -362,7 +369,11 @@ class OwnershipTests(unittest.TestCase):
         self.assertEqual(status["status"], "remuxed")
         self.assertNotEqual(new_fp, fp)
         self.assertEqual(digest(seed), original_sha)
-        self.assertEqual(digest(status["backup"]), original_sha)
+        if retain:
+            self.assertEqual(digest(status["backup"]), original_sha)
+        else:
+            self.assertIsNone(status["backup"])
+            self.assertFalse(list(self.manager.quarantine.glob("media/**/*.mkv")))
         after, _ = self.manager.probe(str(self.video))
         audios = lambda ss: [(s["codec_name"], s.get("tags", {}).get("language"), s.get("tags", {}).get("title"), s.get("disposition"))
                              for s in ss if s["codec_type"] == "audio"]
@@ -370,6 +381,25 @@ class OwnershipTests(unittest.TestCase):
         self.assertEqual(audio_packets(self.video), before_packets)
         self.assertEqual(status["removed_streams"], [s["index"] for s in streams if s["codec_type"] == "subtitle"])
         self.assertFalse(any(s["codec_type"] == "subtitle" for s in after))
+
+    def test_failed_remux_keeps_original_and_rollback_copy(self):
+        original_sha = digest(self.video)
+        self.manager.cfg.update(prune_embedded=True)
+        streams = [{"index": 0, "codec_type": "video", "codec_name": "h264"},
+                   {"index": 1, "codec_type": "subtitle", "codec_name": "subrip", "tags": {"language": "tur"}}]
+        def write_invalid_staged(command, *args, **kwargs):
+            Path(command[-1]).write_bytes(b"invalid replacement")
+            return b""
+        with patch("manager.shutil.which", return_value=None), \
+             patch("manager.run", side_effect=write_invalid_staged), \
+             patch.object(self.manager, "probe", return_value=([], 120)):
+            with self.assertRaisesRegex(Review, "remux_validation_failed"):
+                self.manager.prune(self.item, self.fp, streams, 120, False)
+        self.assertEqual(digest(self.video), original_sha)
+        backups = list(self.manager.quarantine.glob("media/**/*.mkv"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(digest(backups[0]), original_sha)
+        self.assertFalse(list(self.root.glob(".subtitler-*.part")))
 
 
 class BudgetAndProviderTests(unittest.TestCase):

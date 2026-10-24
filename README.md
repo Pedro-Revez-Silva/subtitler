@@ -72,8 +72,13 @@ or budgeted paid generation only after those sources are exhausted. Regional req
 regional evidence: generic Portuguese or Brazilian Portuguese does not satisfy `pt-PT`.
 
 With `management.prune_embedded`, it removes unwanted or replaced subtitle tracks using
-Matroska stream copying, preserving all audio, video, cover art, chapters, and a backup of the
-original file. Native installations should install `mkvmerge` for reliable Matroska cleanup;
+Matroska stream copying, preserving all audio, video, cover art, and chapters. The original
+file is retained during validation and replacement, then its rollback link is removed after
+the replacement and catalogue updates succeed. Failed operations retain the original.
+Set `management.retain_media_backups: true` to keep full originals permanently; these can
+consume substantial space once the remuxed file occupies a separate inode. Existing backups
+are not deleted automatically: verify their working replacements before cleaning them up.
+Native installations should install `mkvmerge` for reliable Matroska cleanup;
 the Docker image includes it. Accepted subtitles remain available if cleanup needs a retry.
 
 ### Failure recovery

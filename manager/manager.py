@@ -54,6 +54,9 @@ class Review(Exception):
 
 def diagnostic(error, stage):
     result = {"stage": stage, "exception": type(error).__name__}
+    if isinstance(error, sqlite3.Error):
+        result["sqlite_errorcode"] = getattr(error, "sqlite_errorcode", None)
+        result["sqlite_errorname"] = getattr(error, "sqlite_errorname", None)
     if isinstance(error, Review):
         result.update(error.diagnostic)
     else:
@@ -1052,7 +1055,22 @@ class Manager:
             self.catalogue.db.execute("UPDATE rejected SET fingerprint=? WHERE path=? AND fingerprint=?", (new_fp, path, fp))
             self.catalogue.db.execute("UPDATE candidate_reviews SET fingerprint=? WHERE path=? AND fingerprint=?", (new_fp, path, fp))
             self.catalogue.db.commit()
-            return new_fp, {"status": "remuxed", "removed_streams": remove, "backup": str(backup)}
+            result = {"status": "remuxed", "removed_streams": remove, "backup": str(backup)}
+            if not self.cfg.get("retain_media_backups", False):
+                # The original is needed until the validated replacement and
+                # catalogue changes have committed, not for every future scan.
+                # Unlink only our rollback link: torrent seed links stay intact.
+                try:
+                    if fingerprint(path) != new_fp or fingerprint(backup) != fp:
+                        raise Review("media_changed_during_backup_cleanup")
+                    backup.unlink()
+                    result["backup"] = None
+                    with contextlib.suppress(OSError):
+                        backup.parent.rmdir()
+                except (OSError, Review) as error:
+                    result["backup_cleanup"] = "pending"
+                    result["backup_cleanup_diagnostic"] = diagnostic(error, "backup_cleanup")
+            return new_fp, result
         finally:
             if staged.exists():
                 staged.unlink()
@@ -1129,11 +1147,7 @@ class Manager:
                 db.execute("INSERT OR REPLACE INTO settings VALUES('paid_daily_usd',?)", (budget,))
                 db.commit()
         paths = set()
-        for index, item in enumerate(self.request.get("items") or []):
-            # Large inventories must not hold the SQLite writer lock while
-            # another queue is publishing or reserving its paid allowance.
-            if index % 100 == 0:
-                db.commit()
+        for item in self.request.get("items") or []:
             path = item["Path"]
             paths.add(path)
             try:
@@ -1142,19 +1156,27 @@ class Manager:
                 fp = fingerprint(path)
             except OSError:
                 continue
-            row = db.execute("SELECT fingerprint FROM media WHERE path=?", (path,)).fetchone()
+            row = db.execute("SELECT fingerprint,item FROM media WHERE path=?", (path,)).fetchone()
+            raw_item = json.dumps(item)
             if not row or row[0] != fp:
                 db.execute("DELETE FROM work_queue WHERE path=? AND state<>'running'", (path,))
-                db.execute("INSERT OR REPLACE INTO media(path,fingerprint,item) VALUES(?,?,?)", (path, fp, json.dumps(item)))
+                db.execute("INSERT OR REPLACE INTO media(path,fingerprint,item) VALUES(?,?,?)", (path, fp, raw_item))
             else:
-                db.execute("UPDATE media SET item=? WHERE path=?", (json.dumps(item), path))
+                if row[1] != raw_item:
+                    db.execute("UPDATE media SET item=? WHERE path=? AND fingerprint=?", (raw_item, path, fp))
+            # Filesystem metadata and subtitle reads can block on a busy media
+            # disk. Never hold SQLite's only writer across those operations.
+            # Unchanged inventory rows do not need a write at all.
+            db.commit()
+            if row and row[0] == fp:
                 # Lost/edited canonical output immediately re-enters the queue.
-                for lang, sha, data in db.execute("SELECT language,sha,data FROM captions WHERE path=? AND fingerprint=?", (path, fp)):
+                for lang, sha, data in db.execute("SELECT language,sha,data FROM captions WHERE path=? AND fingerprint=?", (path, fp)).fetchall():
                     if lang not in self.languages:
                         continue
                     output = json.loads(data)["output"]
                     if not Path(output).exists() or digest(output) != sha:
                         db.execute("UPDATE media SET next_try=0,checked=0 WHERE path=?", (path,))
+                        db.commit()
         db.commit()
         # Only inventory paths remain eligible for new jobs; finish already-running work safely.
         for queued_path, in db.execute("SELECT DISTINCT path FROM work_queue WHERE state<>'running'").fetchall():
@@ -1440,6 +1462,6 @@ if __name__ == "__main__":
     except Review as error:
         print(json.dumps({"error": str(error)}), flush=True)
         sys.exit(1)
-    except Exception:
-        print(json.dumps({"error": "ownership_engine_failed"}), flush=True)
+    except Exception as error:
+        print(json.dumps({"error": "ownership_engine_failed", "diagnostic": diagnostic(error, "engine")}), flush=True)
         sys.exit(1)

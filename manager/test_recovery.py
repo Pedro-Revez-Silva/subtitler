@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import sqlite3
 import subprocess
+import sys
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -20,6 +21,28 @@ class RecoveryTests(unittest.TestCase):
     setUp = fixtures.OwnershipTests.setUp
     caption = fixtures.OwnershipTests.caption
     register = fixtures.OwnershipTests.register
+
+    def test_unexpected_engine_error_reports_locations_without_secret_messages(self):
+        result = subprocess.run([sys.executable, str(Path(__file__).with_name('manager.py'))],
+                                input=json.dumps({'private': 'secret-provider-credential'}),
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
+        data = json.loads(result.stdout)
+        self.assertEqual(data['error'], 'ownership_engine_failed')
+        self.assertEqual(data['diagnostic']['exception'], 'KeyError')
+        self.assertTrue(data['diagnostic']['frames'])
+        self.assertNotIn('secret-provider-credential', result.stdout + result.stderr)
+
+    def test_sqlite_diagnostics_include_error_code_without_statement_or_message(self):
+        db = sqlite3.connect(':memory:')
+        self.addCleanup(db.close)
+        try:
+            db.execute('SELECT secret_provider_value FROM missing_table')
+        except sqlite3.OperationalError as error:
+            detail = diagnostic(error, 'queue')
+        self.assertEqual(detail['sqlite_errorcode'], sqlite3.SQLITE_ERROR)
+        self.assertEqual(detail['sqlite_errorname'], 'SQLITE_ERROR')
+        self.assertNotIn('secret_provider_value', json.dumps(detail))
 
     def test_missing_portuguese_titles_are_valid_metadata(self):
         self.assertEqual(language('por', None), 'pt')

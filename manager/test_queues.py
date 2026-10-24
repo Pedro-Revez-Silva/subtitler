@@ -85,6 +85,51 @@ class QueueTests(unittest.TestCase):
         db.execute("UPDATE work_queue SET state='done' WHERE kind='files'"); db.commit()
         self.assertIsNotNone(claim(db,'transcription'))
 
+    def test_inventory_does_not_hold_writer_lock_during_next_file_metadata(self):
+        second = self.root / 'Other.mkv'
+        second.write_bytes(b'other')
+        self.request['items'].append({**self.item, 'Path': str(second)})
+        writer_results = []
+        def filesystem_probe(path):
+            if str(path) == str(second) and not writer_results:
+                other = sqlite3.connect(self.manager.catalogue.root / 'ownership.sqlite', timeout=.05)
+                try:
+                    other.execute("INSERT OR REPLACE INTO settings VALUES('concurrent_writer','ok')")
+                    other.commit()
+                    writer_results.append(True)
+                except sqlite3.OperationalError:
+                    writer_results.append(False)
+                finally:
+                    other.close()
+            return fingerprint(path)
+        with patch('manager.fingerprint', side_effect=filesystem_probe), patch('manager.drain'):
+            self.manager.scan()
+        self.assertEqual(writer_results, [True])
+
+    def test_inventory_does_not_hold_writer_lock_while_checking_subtitle_files(self):
+        self.register()
+        self.caption = fixtures.OwnershipTests.caption.__get__(self)
+        self.caption('en')
+        # Force an item metadata update before the existing-caption check.
+        self.manager.catalogue.db.execute("UPDATE media SET item='{}'")
+        self.manager.catalogue.db.commit()
+        writer_results = []
+        def subtitle_read(path):
+            if not writer_results:
+                other = sqlite3.connect(self.manager.catalogue.root / 'ownership.sqlite', timeout=.05)
+                try:
+                    other.execute("INSERT OR REPLACE INTO settings VALUES('subtitle_writer','ok')")
+                    other.commit()
+                    writer_results.append(True)
+                except sqlite3.OperationalError:
+                    writer_results.append(False)
+                finally:
+                    other.close()
+            return digest(path)
+        with patch('manager.digest', side_effect=subtitle_read), patch('manager.drain'):
+            self.manager.scan()
+        self.assertEqual(writer_results, [True])
+
     def test_orphan_worker_media_lock_prevents_duplicate_publication(self):
         self.register(); db=self.manager.catalogue.db
         enqueue(db,str(self.video),self.fp,'files'); db.commit(); claim(db,'files')
