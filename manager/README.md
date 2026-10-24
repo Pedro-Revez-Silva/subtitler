@@ -118,6 +118,14 @@ as English or silently accepted. Word and text checks compare the base language;
 regional/script identity comes from explicit media/provider metadata or the
 specified translation target.
 
+When a dialogue stream has no usable language tag, three short local samples
+identify its base language before literal word checks. At least two distinct
+samples must agree with 90% confidence and contain speech; conflicting confident
+samples remain inconclusive. Observations are cached by media fingerprint,
+stream and model. Detection never establishes a regional variant such as pt-PT,
+changes audio tracks, bypasses word/timing verification or makes paid requests.
+Known language tags and text translations waiting on budget avoid this extra work.
+
 Paid mode uses only `whisper-1` and `gpt-4o-mini` through the official API. Model
 prices were checked on 2026-10-11. Every request reserves a conservative upper
 bound in SQLite **before** making the call; crashes, failures and restarts cannot

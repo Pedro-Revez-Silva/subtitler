@@ -349,6 +349,7 @@ class Manager:
         self.model = None
         self.models = {}
         self.word_samples = {}
+        self.audio_language_samples = {}
         self.assets = None
         self.current_item = {}
 
@@ -503,6 +504,51 @@ class Manager:
                                             download_root=str(self.catalogue.root / "models"))
         return self.models[name]
 
+    def detect_audio_language(self, reference, duration, work):
+        """Identify untagged dialogue locally; this never establishes a locale.
+
+        Detection only selects the literal word verifier/transcription language.
+        Acceptance still requires the existing subtitle and timing checks.
+        """
+        name = self.cfg.get("verification_model") or "base"
+        if name.endswith(".en") or name == "none":
+            name = "base"  # English-only models cannot identify foreign audio.
+        seconds = min(20, duration)
+        points = tuple(min(max(0, duration * f), max(0, duration - seconds)) for f in (.15, .5, .85))
+        key = ("audio_language_v1", reference.identity if hasattr(reference, "identity") else str(reference),
+               name, seconds, points)
+        try:
+            if key not in self.audio_language_samples:
+                def recognize():
+                    samples = []
+                    self.emit(stage="identifying_untagged_dialogue", model=name)
+                    for index, start in enumerate(points):
+                        sample = work / f"language-{index}.wav"
+                        if hasattr(reference, "sample"):
+                            reference.sample(start, seconds, sample)
+                        else:
+                            run([self.ffmpeg, "-v", "error", "-y", "-ss", str(start), "-i", str(reference),
+                                 "-t", str(seconds), "-ar", "16000", "-ac", "1", str(sample)], 120)
+                        _, info = self.speech_model(name).transcribe(str(sample), language=None,
+                                                                   beam_size=1, vad_filter=True)
+                        samples.append({"language": language(info.language),
+                                        "probability": float(info.language_probability),
+                                        "speech_seconds": float(info.duration_after_vad), "start": start})
+                    return samples
+                self.audio_language_samples[key] = (reference.word_samples(key, recognize)
+                                                    if hasattr(reference, "word_samples") else recognize())
+            samples = self.audio_language_samples[key]
+            confident = [s for s in samples if s["language"] and math.isfinite(s["probability"])
+                         and .9 <= s["probability"] <= 1 and s["speech_seconds"] >= 3]
+            languages = {base_language(s["language"]) for s in confident}
+            # Do not infer a single dialogue language for mixed-language samples.
+            accepted = len(languages) == 1 and len({s["start"] for s in confident}) >= 2
+            return {"language": next(iter(languages)) if accepted else "",
+                    "status": "confident" if accepted else "inconclusive",
+                    "method": f"local_whisper_{name}_language_detection", "samples": samples}
+        except Exception as error:
+            return {"language": "", "status": "unavailable", **diagnostic(error, "audio_language_detection")}
+
     def verify_words(self, reference, cues, lang, work):
         # Only literal word comparisons in the SAME language are evidence. A
         # translated subtitle cannot be semantically verified by audio VAD.
@@ -648,6 +694,10 @@ class Manager:
         aligned = work / "aligned.srt"
         tags = audio.get("tags", {})
         audio_lang = language(tags.get("language"), tags.get("title"))
+        audio_detection = None
+        if not audio_lang and reference is not None and self.cfg.get("verify_words"):
+            audio_detection = self.detect_audio_language(reference, duration, work)
+            audio_lang = audio_detection["language"]
         same_language = bool(audio_lang) and (audio_lang and base_language(audio_lang) == base_language(lang))
         content = {"status": "not_checked" if same_language else "translated_text_unverified"}
         timing = None
@@ -744,6 +794,8 @@ class Manager:
                 "structure": structure, "timing": timing, "content": content,
                 "audio_stream": audio["index"], "audio_language": audio_lang,
                 "checked_at": time.time(), "backup": original_backup}
+        if audio_detection is not None:
+            data["audio_language_detection"] = audio_detection
         self.catalogue.record(path, fp, lang, final_sha, data)
         return data
 
@@ -830,6 +882,10 @@ class Manager:
         reference = self.reference(item, fp, streams, duration, audio, work)
         tags = audio.get("tags", {})
         audio_lang = language(tags.get("language"), tags.get("title"))
+        # An accepted source can already supply a translation. Budget waits for
+        # that text must not repeatedly decode untagged audio or invoke a model.
+        if not audio_lang and not any(l != lang and isinstance(d, dict) and "output" in d for l, d in detail.items()):
+            audio_lang = self.detect_audio_language(reference, duration, work)["language"]
         target_audio = matches(audio_lang, lang)
         # Whisper's audio-translation task outputs English only. Other targets
         # use transcription in the actual dialogue language or text translation.
@@ -1372,6 +1428,7 @@ class Manager:
                 self.assets.close()
                 self.assets = None
             self.word_samples.clear()
+            self.audio_language_samples.clear()
         # Never persist a stale success across a concurrent Radarr import.
         if Path(path).exists() and fingerprint(path) == new_fp:
             pending = db.execute("SELECT 1 FROM feedback WHERE path=? AND applied=0", (path,)).fetchone()
