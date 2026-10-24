@@ -19,6 +19,9 @@ management:
   verification_fallback_model: small
   local_transcription: true
   prune_embedded: true
+  # Full original videos are discarded after a validated, committed remux.
+  # Opt in only when permanent full-file rollback copies are wanted.
+  retain_media_backups: false
   min_free_gb: 50
   paid_fallback: false
   media_cache_gb: 5 # bounded reusable audio/subtitle/word-sample cache on the state disk

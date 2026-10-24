@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-export GOTOOLCHAIN="${GOTOOLCHAIN:-go1.26.9}"
+export GOTOOLCHAIN="${GOTOOLCHAIN:-auto}"
 
 COVERAGE_MIN="${COVERAGE_MIN:-95}"
 COVERAGE_PACKAGES="${COVERAGE_PACKAGES:-./internal/config,./internal/subtitle}"
