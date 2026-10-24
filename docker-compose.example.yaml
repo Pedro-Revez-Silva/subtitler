@@ -2,6 +2,7 @@ services:
   subtitler:
     image: ghcr.io/pedro-revez-silva/subtitler:latest
     container_name: subtitler
+    init: true
     restart: unless-stopped
     user: "${PUID:-1000}:${PGID:-1000}"
     environment:

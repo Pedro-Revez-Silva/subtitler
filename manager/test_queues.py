@@ -149,6 +149,17 @@ class QueueTests(unittest.TestCase):
         job.assert_called_once_with(str(self.video),self.fp,'files')
         self.assertEqual(db.execute('SELECT state FROM work_queue').fetchone()[0],'done')
 
+    def test_single_worker_does_not_start_multiprocessing_resource_tracker(self):
+        self.register()
+        db = self.manager.catalogue.db
+        enqueue(db, str(self.video), self.fp, 'transcription')
+        db.commit()
+        with patch('scheduler.multiprocessing.get_context', side_effect=AssertionError('unnecessary helper process')), \
+             patch.object(self.manager, 'process_job') as job, patch.object(self.manager, 'emit'):
+            drain(self.manager, 'transcription')
+        job.assert_called_once_with(str(self.video), self.fp, 'transcription')
+        self.assertEqual(db.execute('SELECT state FROM work_queue').fetchone()[0], 'done')
+
     def test_sustained_load_leaves_the_job_queued(self):
         self.register(); db=self.manager.catalogue.db
         enqueue(db,str(self.video),self.fp,'files'); db.commit()

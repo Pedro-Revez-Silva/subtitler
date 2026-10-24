@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import signal
 import sys
+import threading
 import time
 
 
@@ -230,12 +231,19 @@ def drain(manager, kind):
     db.execute("UPDATE work_queue SET state='queued' WHERE kind=? AND state='running'", (kind,))
     db.execute("UPDATE work_queue SET resource='disk:' || substr(fingerprint,1,instr(fingerprint,':')-1) WHERE resource='disk'")
     db.commit()
-    context = multiprocessing.get_context('spawn')
-    print_lock = context.Lock()
-    _print_lock = print_lock
     request = {k: v for k, v in manager.request.items() if k != 'items'}
-    executor = InlineExecutor() if maximum == 1 else ProcessPoolExecutor(
-        max_workers=maximum, mp_context=context, initializer=initialize_worker, initargs=(request, print_lock))
+    if maximum == 1:
+        # No cross-process semaphore is needed by the inline executor. A
+        # multiprocessing lock would start a resource-tracker subprocess for
+        # every serial batch, even when there is no eligible work.
+        print_lock = threading.Lock()
+        executor = InlineExecutor()
+    else:
+        context = multiprocessing.get_context('spawn')
+        print_lock = context.Lock()
+        executor = ProcessPoolExecutor(max_workers=maximum, mp_context=context,
+                                      initializer=initialize_worker, initargs=(request, print_lock))
+    _print_lock = print_lock
     active, started = {}, 0
     cap = manager.request.get('max_jobs', 0)
     if cap <= 0:

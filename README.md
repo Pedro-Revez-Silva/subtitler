@@ -108,6 +108,9 @@ away the whole movie transcription.
 Docker is the recommended setup. The image includes `ffmpeg` and `ffprobe`, so the host only
 needs Docker and access to the media folders.
 
+The Compose example enables `init: true` to reap orphaned Python worker helpers.
+When launching the image directly, use `docker run --init` for the same process cleanup.
+
 ### 1. Copy the example files
 
 ```bash
