@@ -13,6 +13,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg mkvtooln
 COPY manager/requirements.txt /opt/subtitler/requirements.txt
 RUN pip install --no-cache-dir --upgrade pip==26.2.2 && pip install --no-cache-dir -r /opt/subtitler/requirements.txt
 COPY manager /opt/subtitler
+# Preserve non-root runtime access even when the source checkout has a private umask.
+RUN chmod -R a+rX /opt/subtitler
 COPY --from=build /out/subtitler /usr/local/bin/subtitler
 
 ENTRYPOINT ["subtitler"]
