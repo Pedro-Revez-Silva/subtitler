@@ -187,12 +187,12 @@ class ThroughputTests(unittest.TestCase):
 class ResourceTests(unittest.TestCase):
     def db(self):
         db=sqlite3.connect(':memory:'); self.addCleanup(db.close)
-        db.execute('CREATE TABLE media(path TEXT PRIMARY KEY,fingerprint TEXT,checked REAL)')
+        db.execute('CREATE TABLE media(path TEXT PRIMARY KEY,fingerprint TEXT,checked REAL,added_at REAL DEFAULT 0)')
         prepare(db)
         return db
 
     def enqueue(self,db,path,resource,kind='files'):
-        db.execute('INSERT INTO media VALUES(?,?,0)',(path,'1:2:3:4'))
+        db.execute('INSERT INTO media(path,fingerprint,checked) VALUES(?,?,0)',(path,'1:2:3:4'))
         enqueue(db,path,'1:2:3:4',kind,resource=resource); db.commit()
 
     def test_busy_disk_does_not_block_other_drives_or_text(self):

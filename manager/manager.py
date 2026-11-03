@@ -253,7 +253,8 @@ class Catalogue:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS media(path TEXT PRIMARY KEY, fingerprint TEXT, item TEXT,
-                checked REAL DEFAULT 0, next_try REAL DEFAULT 0, status TEXT DEFAULT 'pending', detail TEXT DEFAULT '{}');
+                checked REAL DEFAULT 0, next_try REAL DEFAULT 0, status TEXT DEFAULT 'pending', detail TEXT DEFAULT '{}',
+                added_at REAL DEFAULT 0);
             CREATE TABLE IF NOT EXISTS captions(path TEXT, fingerprint TEXT, language TEXT, sha TEXT, data TEXT,
                 PRIMARY KEY(path, language));
             CREATE TABLE IF NOT EXISTS rejected(path TEXT, fingerprint TEXT, language TEXT, sha TEXT, source TEXT,
@@ -265,6 +266,12 @@ class Catalogue:
             CREATE TABLE IF NOT EXISTS candidate_reviews(path TEXT, fingerprint TEXT, language TEXT, sha TEXT,
                 source TEXT, reason TEXT, retry_after REAL, PRIMARY KEY(path,fingerprint,language,sha,source));
         """)
+        if 'added_at' not in {row[1] for row in self.db.execute('PRAGMA table_info(media)')}:
+            try:
+                self.db.execute('ALTER TABLE media ADD COLUMN added_at REAL DEFAULT 0')
+            except sqlite3.OperationalError:
+                if 'added_at' not in {row[1] for row in self.db.execute('PRAGMA table_info(media)')}:
+                    raise
         self.db.commit()
         prepare(self.db)
 
@@ -1212,14 +1219,17 @@ class Manager:
                 fp = fingerprint(path)
             except OSError:
                 continue
-            row = db.execute("SELECT fingerprint,item FROM media WHERE path=?", (path,)).fetchone()
+            row = db.execute("SELECT fingerprint,item,added_at FROM media WHERE path=?", (path,)).fetchone()
             raw_item = json.dumps(item)
+            added_at = item.get('AddedAt', 0)
+            if not isinstance(added_at, (int, float)) or not math.isfinite(added_at) or added_at < 0:
+                added_at = 0
             if not row or row[0] != fp:
                 db.execute("DELETE FROM work_queue WHERE path=? AND state<>'running'", (path,))
-                db.execute("INSERT OR REPLACE INTO media(path,fingerprint,item) VALUES(?,?,?)", (path, fp, raw_item))
+                db.execute("INSERT OR REPLACE INTO media(path,fingerprint,item,added_at) VALUES(?,?,?,?)", (path, fp, raw_item, added_at))
             else:
-                if row[1] != raw_item:
-                    db.execute("UPDATE media SET item=? WHERE path=? AND fingerprint=?", (raw_item, path, fp))
+                if row[1] != raw_item or row[2] != added_at:
+                    db.execute("UPDATE media SET item=?,added_at=? WHERE path=? AND fingerprint=?", (raw_item, added_at, path, fp))
             # Filesystem metadata and subtitle reads can block on a busy media
             # disk. Never hold SQLite's only writer across those operations.
             # Unchanged inventory rows do not need a write at all.
@@ -1241,7 +1251,7 @@ class Manager:
         db.commit()
         jobs = 0
         rows = db.execute("SELECT path,fingerprint,item,detail,status,checked FROM media WHERE next_try<=? "
-                          "ORDER BY EXISTS(SELECT 1 FROM feedback WHERE feedback.path=media.path AND applied=0) DESC,checked,path",
+                          "ORDER BY EXISTS(SELECT 1 FROM feedback WHERE feedback.path=media.path AND applied=0) DESC,added_at DESC,checked,path",
                           (time.time(),)).fetchall()
         rows = [r for r in rows if r[0] in paths]
         # Reserve one slot for a due retry, even while thousands of untouched
@@ -1292,7 +1302,7 @@ class Manager:
         db = self.catalogue.db
         rows = db.execute("SELECT m.path,m.fingerprint,m.detail FROM media m JOIN work_queue q ON q.path=m.path "
                           "WHERE q.kind='transcription' AND q.state='queued' AND q.available<=? AND q.resource<>'text' "
-                          "AND json_type(m.detail,'$.audio_tracks') IS NULL LIMIT ?",
+                          "AND json_type(m.detail,'$.audio_tracks') IS NULL ORDER BY m.added_at DESC,q.last_run,m.path LIMIT ?",
                           (time.time(),self.cfg.get('queues',{}).get('batch_size',16))).fetchall()
         for path,fp,raw in rows:
             detail = json.loads(raw)

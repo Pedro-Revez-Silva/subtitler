@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestSystemStatusSendsAPIKey(t *testing.T) {
@@ -91,13 +92,13 @@ func TestSonarrEpisodesBuildsMediaItems(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v3/series":
-			_, _ = w.Write([]byte(`[{"id":7,"title":"Show","path":"/shows/Show"}]`))
+			_, _ = w.Write([]byte(`[{"id":7,"title":"Show","path":"/shows/Show","added":"2020-01-01T00:00:00Z"}]`))
 		case "/api/v3/episodefile":
 			if got := r.URL.Query().Get("seriesId"); got != "7" {
 				t.Fatalf("unexpected series id %q", got)
 			}
 			_, _ = w.Write([]byte(`[
-				{"id":1,"path":"/media/Show/S01E01.mkv"},
+				{"id":1,"path":"/media/Show/S01E01.mkv","dateAdded":"2026-11-03T12:30:00Z"},
 				{"id":2,"relativePath":"Season 1/S01E02.mkv"},
 				{"id":3}
 			]`))
@@ -116,5 +117,42 @@ func TestSonarrEpisodesBuildsMediaItems(t *testing.T) {
 	}
 	if items[0].Source != "sonarr" || items[1].Path != "/shows/Show/Season 1/S01E02.mkv" {
 		t.Fatalf("unexpected sonarr items %#v", items)
+	}
+	if items[0].AddedAt != time.Date(2026, 11, 3, 12, 30, 0, 0, time.UTC).Unix() ||
+		items[1].AddedAt != time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC).Unix() {
+		t.Fatalf("new episode import dates must take precedence over the older series date: %#v", items)
+	}
+}
+
+func TestRadarrLibraryImportDates(t *testing.T) {
+	imported := time.Date(2026, 11, 3, 12, 30, 0, 0, time.UTC).Unix()
+	requested := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC).Unix()
+	for _, tc := range []struct {
+		name, fileDate, titleDate string
+		want                      int64
+	}{
+		{"new import of an older title", "2026-11-03T12:30:00.1234567Z", "2020-01-01T00:00:00Z", imported},
+		{"timezone offset", "2026-11-03T14:30:00+02:00", "2020-01-01T00:00:00Z", imported},
+		{"missing file date", "", "2020-01-01T00:00:00Z", requested},
+		{"invalid file date", "not-a-date", "2020-01-01T00:00:00Z", requested},
+		{"zero file date", "0001-01-01T00:00:00Z", "2020-01-01T00:00:00Z", requested},
+		{"unknown dates", "not-a-date", "", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode([]map[string]any{{
+					"id": 1, "title": "Movie", "added": tc.titleDate,
+					"movieFile": map[string]any{"id": 2, "path": "/movies/movie.mkv", "dateAdded": tc.fileDate},
+				}})
+			}))
+			defer server.Close()
+			items, err := New(server.URL, "test-key").RadarrMovies(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(items) != 1 || items[0].AddedAt != tc.want {
+				t.Fatalf("expected library import time %d, got %#v", tc.want, items)
+			}
+		})
 	}
 }
