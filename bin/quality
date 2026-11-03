@@ -91,6 +91,9 @@ case "${1:-}" in
     run "Coverage" coverage
     run "Subtitle ownership tests" ownership_tests
     run "Docker build" docker build --build-arg APP_VERSION=ci -t subtitler:quality-check .
+    run "Unprivileged ownership imports" docker run --rm --network none --user 65534:65534 \
+      --env PYTHONDONTWRITEBYTECODE=1 --entrypoint python3 subtitler:quality-check \
+      -c 'import sys; sys.path.insert(0, "/opt/subtitler"); import manager, scheduler, mediawork, locales, paid, providers, pgs'
     docker rmi subtitler:quality-check >/dev/null
     run "Vulnerability check" env GOTOOLCHAIN=auto go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
     ;;

@@ -22,6 +22,7 @@ type MediaItem struct {
 	Year             int
 	FileID           int
 	SeriesID         int
+	AddedAt          int64 // Library import time in Unix seconds; zero when unavailable.
 }
 
 type Client struct {
@@ -66,6 +67,7 @@ func (c *Client) RadarrMovies(ctx context.Context) ([]MediaItem, error) {
 			IMDBID:           movie.IMDBID,
 			Year:             movie.Year,
 			FileID:           movie.MovieFile.ID,
+			AddedAt:          libraryAddedAt(movie.MovieFile.DateAdded, movie.Added),
 		})
 	}
 	return items, nil
@@ -102,6 +104,7 @@ func (c *Client) SonarrEpisodes(ctx context.Context) ([]MediaItem, error) {
 				OriginalLanguage: show.OriginalLanguage.Name,
 				FileID:           file.ID,
 				SeriesID:         show.ID,
+				AddedAt:          libraryAddedAt(file.DateAdded, show.Added),
 			})
 		}
 	}
@@ -111,6 +114,16 @@ func (c *Client) SonarrEpisodes(ctx context.Context) ([]MediaItem, error) {
 func (c *Client) SystemStatus(ctx context.Context) error {
 	var status systemStatus
 	return c.get(ctx, "/api/v3/system/status", nil, &status)
+}
+
+func libraryAddedAt(dates ...string) int64 {
+	for _, value := range dates {
+		added, err := time.Parse(time.RFC3339Nano, value)
+		if err == nil && added.Unix() > 0 {
+			return added.Unix()
+		}
+	}
+	return 0
 }
 
 func (c *Client) get(ctx context.Context, endpoint string, query url.Values, out any) error {
@@ -145,6 +158,7 @@ type radarrMovie struct {
 	Year             int    `json:"year"`
 	Path             string `json:"path"`
 	IMDBID           string `json:"imdbId"`
+	Added            string `json:"added"`
 	OriginalLanguage struct {
 		Name string `json:"name"`
 	} `json:"originalLanguage"`
@@ -152,6 +166,7 @@ type radarrMovie struct {
 		ID           int    `json:"id"`
 		Path         string `json:"path"`
 		RelativePath string `json:"relativePath"`
+		DateAdded    string `json:"dateAdded"`
 	} `json:"movieFile"`
 }
 
@@ -159,6 +174,7 @@ type sonarrSeries struct {
 	ID               int    `json:"id"`
 	Title            string `json:"title"`
 	Path             string `json:"path"`
+	Added            string `json:"added"`
 	OriginalLanguage struct {
 		Name string `json:"name"`
 	} `json:"originalLanguage"`
@@ -168,6 +184,7 @@ type sonarrEpisodeFile struct {
 	ID           int    `json:"id"`
 	Path         string `json:"path"`
 	RelativePath string `json:"relativePath"`
+	DateAdded    string `json:"dateAdded"`
 }
 
 type systemStatus struct {

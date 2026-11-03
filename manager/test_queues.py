@@ -10,7 +10,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from manager import Manager, canonical, digest, fingerprint
+from manager import Catalogue, Manager, canonical, digest, fingerprint
 from paid import Paid, PaidUnavailable
 from scheduler import Admission, LoadSensor, claim, drain, enqueue
 import test_manager as fixtures
@@ -84,6 +84,81 @@ class QueueTests(unittest.TestCase):
         self.assertIsNone(claim(db,'transcription'))
         db.execute("UPDATE work_queue SET state='done' WHERE kind='files'"); db.commit()
         self.assertIsNotNone(claim(db,'transcription'))
+
+    def test_recent_library_imports_run_first_in_both_queues_then_backlog(self):
+        self.item['AddedAt'] = 100
+        newer = self.root / 'Z-new-import.mkv'
+        newer.write_bytes(b'new media')
+        self.request['items'].append({**self.item, 'Path': str(newer), 'Source': 'manual', 'AddedAt': 200})
+        self.request['action'] = 'files'
+        with patch('manager.drain'):
+            self.manager.scan()
+        db = self.manager.catalogue.db
+        new_fp = fingerprint(newer)
+        for kind in ['files', 'transcription']:
+            with self.subTest(queue=kind):
+                enqueue(db, str(self.video), self.fp, kind)
+                enqueue(db, str(newer), new_fp, kind)
+                # A recently retried arrival still precedes untouched backlog.
+                db.execute('UPDATE work_queue SET last_run=1000 WHERE path=?', (str(newer),))
+                db.execute('UPDATE media SET checked=1000 WHERE path=?', (str(newer),))
+                db.commit()
+                self.assertEqual(claim(db, kind)[0], str(newer))
+                db.execute("UPDATE work_queue SET state='done' WHERE path=? AND kind=?", (str(newer), kind))
+                db.commit()
+                self.assertEqual(claim(db, kind)[0], str(self.video))
+                db.execute("UPDATE work_queue SET state='done' WHERE kind=?", (kind,))
+                db.commit()
+
+    def test_priority_and_retry_cooldowns_still_apply_to_recent_imports(self):
+        self.register()
+        db = self.manager.catalogue.db
+        newer = self.root / 'new.mkv'
+        db.execute('INSERT INTO media(path,fingerprint,item,added_at) VALUES(?,?,?,?)',
+                   (str(newer), self.fp, '{}', 200))
+        enqueue(db, str(self.video), self.fp, 'files', priority=2)
+        enqueue(db, str(newer), self.fp, 'files')
+        db.commit()
+        self.assertEqual(claim(db, 'files')[0], str(self.video))
+        db.execute("UPDATE work_queue SET state='done' WHERE path=?", (str(self.video),))
+        db.execute('UPDATE work_queue SET available=? WHERE path=?', (time.time()+3600, str(newer)))
+        enqueue(db, str(self.video), self.fp, 'files')
+        db.commit()
+        self.assertEqual(claim(db, 'files')[0], str(self.video))
+
+    def test_inventory_refresh_updates_arrival_without_resetting_generation_wait(self):
+        self.request['action'] = 'files'
+        with patch('manager.drain'):
+            self.manager.scan()
+        db = self.manager.catalogue.db
+        available = time.time() + 3600
+        enqueue(db, str(self.video), self.fp, 'transcription', available=available)
+        db.commit()
+        self.item['AddedAt'] = 200
+        with patch('manager.drain'):
+            self.manager.scan()
+        self.assertEqual(db.execute('SELECT added_at FROM media').fetchone()[0], 200)
+        self.assertEqual(db.execute("SELECT state,available FROM work_queue WHERE kind='transcription'").fetchone(),
+                         ('queued', available))
+
+    def test_old_catalogue_migration_preserves_media_and_running_claim(self):
+        root = self.root / 'legacy'
+        root.mkdir()
+        db = sqlite3.connect(root / 'ownership.sqlite')
+        db.execute("CREATE TABLE media(path TEXT PRIMARY KEY,fingerprint TEXT,item TEXT,checked REAL,"
+                   "next_try REAL,status TEXT,detail TEXT)")
+        previous = (str(self.video), self.fp, json.dumps(self.item), 42, 99, 'needs_attention', '{"accepted":"kept"}')
+        db.execute('INSERT INTO media VALUES(?,?,?,?,?,?,?)', previous)
+        db.execute("CREATE TABLE work_queue(path TEXT,kind TEXT,fingerprint TEXT,state TEXT,available REAL,"
+                   "priority INTEGER,PRIMARY KEY(path,kind))")
+        db.execute("INSERT INTO work_queue VALUES(?,'transcription',?,'running',123,2)", (str(self.video), self.fp))
+        db.commit()
+        db.close()
+        migrated = Catalogue(root)
+        self.addCleanup(migrated.db.close)
+        self.assertEqual(migrated.db.execute('SELECT path,fingerprint,item,checked,next_try,status,detail FROM media').fetchone(), previous)
+        self.assertEqual(migrated.db.execute('SELECT added_at FROM media').fetchone()[0], 0)
+        self.assertEqual(migrated.db.execute('SELECT state,available,priority FROM work_queue').fetchone(), ('running', 123, 2))
 
     def test_inventory_does_not_hold_writer_lock_during_next_file_metadata(self):
         second = self.root / 'Other.mkv'

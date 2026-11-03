@@ -144,6 +144,15 @@ retry state, not audio or credentials. Restarts recover interrupted claims and
 retain validated captions, rejected candidates, translation cache and the paid
 ledger. A per-media lock also protects against a surviving orphan worker.
 
+Within each priority level, both queues process recently imported library files
+before older backlog. Radarr and Sonarr file import dates take precedence over
+the movie/series addition date, so a new episode of an existing series is also
+prioritized. Missing or invalid dates fall back to the title addition date;
+items without either date remain eligible after dated items. Explicit feedback
+and recovery priorities, cleanup priority, retry cooldowns, disk admission and
+the daily paid allowance still apply. Running jobs finish normally, and new
+arrival dates refresh on the next inventory scan without resetting cached work.
+
 Configure `management.queues` using the example YAML. Each queue has its own
 worker limit and processes a bounded batch before refreshing inventory. A
 positive `processing.max_jobs_per_scan` overrides the queue batch size for each

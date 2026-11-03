@@ -53,7 +53,7 @@ def claim(db, kind, sample=None, cfg=None):
                          "WHERE q.kind=? AND q.state='queued' AND q.available<=? AND q.fingerprint=m.fingerprint "
                          "AND NOT EXISTS(SELECT 1 FROM work_queue other WHERE other.path=q.path AND other.state='running') "
                          "AND (q.resource='text' OR NOT EXISTS(SELECT 1 FROM work_queue other WHERE other.resource=q.resource AND other.state='running')) "
-                         "ORDER BY q.priority DESC,q.last_run,m.checked,q.path", (kind, time.time())).fetchall()
+                         "ORDER BY q.priority DESC,m.added_at DESC,q.last_run,m.checked,q.path", (kind, time.time())).fetchall()
         row = next((row for row in rows if resource_available(row[2], sample, cfg)), None)
         if row:
             db.execute("UPDATE work_queue SET state='running',last_run=? WHERE path=? AND kind=?", (time.time(),row[0], kind))
